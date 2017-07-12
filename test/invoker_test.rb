@@ -121,14 +121,14 @@ context 'Invoker' do
     begin
       %x(mkfifo #{sample_inpath})
       write_thread = Thread.new do
-        ::File.write sample_inpath, 'pipe content'
+        IO.write sample_inpath, 'pipe content'
       end
       invoker = invoke_cli_to_buffer %w(-a stylesheet!), sample_inpath
       result = invoker.read_output
       assert_match(/pipe content/, result)
       write_thread.join
     ensure
-      ::FileUtils.rm_f sample_inpath
+      FileUtils.rm_f sample_inpath
     end
   end if RUBY_MIN_VERSION_1_9 && !windows?
 
@@ -209,7 +209,7 @@ context 'Invoker' do
       doc = invoker.document
       assert_equal sample_outpath, doc.attr('outfile')
       assert File.exist?(sample_outpath)
-      output = File.read(sample_outpath)
+      output = IO.read(sample_outpath)
       assert !output.empty?
       assert_xpath '/html', output, 1
       assert_xpath '/html/head', output, 1
@@ -373,9 +373,9 @@ context 'Invoker' do
 
   test 'should render all files that matches an absolute path glob expression' do
     basic_outpath = File.expand_path(File.join(File.dirname(__FILE__), 'fixtures', 'basic.html'))
-    glob = File.join(File.dirname(__FILE__), 'fixtures', 'ba*.asciidoc')
+    glob = File.join(File.expand_path(File.dirname(__FILE__)), 'fixtures', 'ba*.asciidoc')
     # test Windows using backslash-style pathname
-    if ::File::ALT_SEPARATOR == '\\'
+    if File::ALT_SEPARATOR == '\\'
       glob = glob.tr '/', '\\'
     end
 
@@ -438,6 +438,32 @@ context 'Invoker' do
     assert_equal 'book', doc.attr('doctype')
     output = invoker.read_output
     assert_xpath '/html/body[@class="book"]', output, 1
+  end
+
+  test 'should warn if doctype is inline and the first block is not a candidate for inline conversion' do
+    ['== Section Title', 'image::tiger.png[]'].each do |input|
+      warnings = redirect_streams do |out, err|
+        invoke_cli_to_buffer(%w(-d inline), '-') { input }
+        err.string
+      end
+      assert_match(/WARNING: no inline candidate/, warnings)
+    end
+  end
+
+  test 'should not warn if doctype is inline and the document has no blocks' do
+    warnings = redirect_streams do |out, err|
+      invoke_cli_to_buffer(%w(-d inline), '-') { '// comment' }
+      err.string
+    end
+    refute_match(/WARNING/, warnings)
+  end
+
+  test 'should not warn if doctype is inline and the document contains multiple blocks' do
+    warnings = redirect_streams do |out, err|
+      invoke_cli_to_buffer(%w(-d inline), '-') { %(paragraph one\n\nparagraph two\n\nparagraph three) }
+      err.string
+    end
+    refute_match(/WARNING/, warnings)
   end
 
   test 'should locate custom templates based on template dir, template engine and backend' do

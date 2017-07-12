@@ -65,7 +65,7 @@ class Minitest::Test
   end
 
   def example_document(name, opts = {})
-    document_from_string File.read(sample_doc_path(name)), opts
+    document_from_string IO.read(sample_doc_path(name)), opts
   end
 
   def assert_difference(expression, difference = 1, message = nil, &block)
@@ -86,11 +86,11 @@ class Minitest::Test
   end
 
   def xmlnodes_at_css(css, content, count = nil)
-    xmlnodes_at_path(:css, css, content)
+    xmlnodes_at_path(:css, css, content, count)
   end
 
   def xmlnodes_at_xpath(xpath, content, count = nil)
-    xmlnodes_at_path(:xpath, xpath, content)
+    xmlnodes_at_path(:xpath, xpath, content, count)
   end
 
   def xmlnodes_at_path(type, path, content, count = nil)
@@ -193,7 +193,7 @@ class Minitest::Test
   end
 
   def parse_header_metadata(source, doc = nil)
-    reader = Asciidoctor::Reader.new source.split ::Asciidoctor::EOL
+    reader = Asciidoctor::Reader.new source.split ::Asciidoctor::LF
     [::Asciidoctor::Parser.parse_header_metadata(reader, doc), reader]
   end
 
@@ -216,19 +216,18 @@ class Minitest::Test
     nil
   end
 
-  # Expand the character for an entity such as &#8212; into a glyph
-  # so it can be used to match in an XPath expression
+  # Decode the numeric character reference, such as 8212, to a Unicode glyph
+  # so it may be used in an XPath expression.
   #
   # Examples
   #
-  #   expand_entity 60
+  #   decode_char 60
   #   # => "<"
   #
-  # Returns the String entity expanded to its equivalent UTF-8 glyph
-  def expand_entity(number)
-    [number].pack('U*')
+  # Returns the decoded String that corresponds to the numeric character reference
+  def decode_char number
+    [number].pack 'U1'
   end
-  alias :entity :expand_entity
 
   def invoke_cli_with_filenames(argv = [], filenames = [], &block)
 
@@ -269,12 +268,9 @@ class Minitest::Test
   def redirect_streams
     old_stdout, $stdout = $stdout, (tmp_stdout = ::StringIO.new)
     old_stderr, $stderr = $stderr, (tmp_stderr = ::StringIO.new)
-    begin
-      yield tmp_stdout, tmp_stderr
-    ensure
-      $stdout = old_stdout
-      $stderr = old_stderr
-    end
+    yield tmp_stdout, tmp_stderr
+  ensure
+    $stdout, $stderr = old_stdout, old_stderr
   end
 
   def resolve_localhost

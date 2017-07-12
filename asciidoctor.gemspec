@@ -1,4 +1,4 @@
-# -*- encoding: utf-8 -*-
+# encoding: UTF-8
 require File.expand_path '../lib/asciidoctor/version', __FILE__
 require 'open3' unless defined? Open3
 
@@ -33,7 +33,7 @@ Gem::Specification.new do |s|
   # erubis is needed for testing use of alternative eRuby impls
   s.add_development_dependency 'erubis', '~> 2.7.0'
   # haml is needed for testing custom templates
-  s.add_development_dependency 'haml', '~> 4.0.0'
+  s.add_development_dependency 'haml', '~> 5.0.0'
   s.add_development_dependency 'nokogiri', '~> 1.7.0'
   s.add_development_dependency 'rake', '~> 10.0.0'
   s.add_development_dependency 'rspec-expectations', '~> 2.14.0'
@@ -42,7 +42,7 @@ Gem::Specification.new do |s|
   s.add_development_dependency 'thread_safe', '~> 0.3.0'
   # tilt is needed for testing custom templates
   s.add_development_dependency 'tilt', '~> 2.0.0'
-  s.add_development_dependency 'yard', '~> 0.9.0'
+  s.add_development_dependency 'yard', '0.9.8'
   s.add_development_dependency 'yard-tomdoc', '~> 0.7.0'
   s.add_development_dependency 'minitest', '~> 5.3.0'
 end

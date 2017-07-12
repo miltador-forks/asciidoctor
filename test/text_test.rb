@@ -35,7 +35,7 @@ context "Text" do
     input << "[verse]\n"
     input.concat(File.readlines(sample_doc_path(:encoding)))
     doc = empty_document
-    reader = Asciidoctor::PreprocessorReader.new doc, input
+    reader = Asciidoctor::PreprocessorReader.new doc, input, nil, :normalize => true
     block = Asciidoctor::Parser.next_block(reader, doc)
     assert_xpath '//pre', block.render.gsub(/^\s*\n/, ''), 1
   end
@@ -45,7 +45,7 @@ context "Text" do
 include::fixtures/encoding.asciidoc[tags=romé]
     EOS
     doc = empty_safe_document :base_dir => File.expand_path(File.dirname(__FILE__))
-    reader = Asciidoctor::PreprocessorReader.new doc, input
+    reader = Asciidoctor::PreprocessorReader.new doc, input, nil, :normalize => true
     block = Asciidoctor::Parser.next_block(reader, doc)
     output = block.render
     assert_css '.paragraph', output, 1
@@ -187,7 +187,7 @@ This line is separated by something that is not a horizontal rule...
   end
 
   test 'emphasized text with single quote using apostrophe characters' do
-    rsquo = [8217].pack 'U*'
+    rsquo = decode_char 8217
     assert_xpath %(//em[text()="Johnny#{rsquo}s"]), render_string(%q(It's 'Johnny's' phone), :attributes => {'compat-mode' => ''})
     assert_xpath %(//p[text()="It#{rsquo}s 'Johnny#{rsquo}s' phone"]), render_string(%q(It's 'Johnny's' phone))
   end

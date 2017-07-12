@@ -17,6 +17,85 @@ context "Parser" do
     assert_equal 'foo3-bar', Asciidoctor::Parser.sanitize_attribute_name("Foo 3^ # - Bar[")
   end
 
+  test 'store attribute with value' do
+    attr_name, attr_value = Asciidoctor::Parser.store_attribute 'foo', 'bar'
+    assert_equal 'foo', attr_name
+    assert_equal 'bar', attr_value
+  end
+
+  test 'store attribute with negated value' do
+    { 'foo!' => nil, '!foo' => nil, 'foo' => nil }.each do |name, value|
+      attr_name, attr_value = Asciidoctor::Parser.store_attribute name, value
+      assert_equal name.sub('!', ''), attr_name
+      assert_nil attr_value
+    end
+  end
+
+  test 'store accessible attribute on document with value' do
+    doc = empty_document
+    doc.set_attribute 'foo', 'baz'
+    attrs = {}
+    attr_name, attr_value = Asciidoctor::Parser.store_attribute 'foo', 'bar', doc, attrs
+    assert_equal 'foo', attr_name
+    assert_equal 'bar', attr_value
+    assert_equal 'bar', (doc.attr 'foo')
+    assert attrs.key?(:attribute_entries)
+    assert_equal 1, attrs[:attribute_entries].size
+    assert_equal 'foo', attrs[:attribute_entries][0].name
+    assert_equal 'bar', attrs[:attribute_entries][0].value
+  end
+
+  test 'store accessible attribute on document with value that contains attribute reference' do
+    doc = empty_document
+    doc.set_attribute 'foo', 'baz'
+    doc.set_attribute 'release', 'ultramega'
+    attrs = {}
+    attr_name, attr_value = Asciidoctor::Parser.store_attribute 'foo', '{release}', doc, attrs
+    assert_equal 'foo', attr_name
+    assert_equal 'ultramega', attr_value
+    assert_equal 'ultramega', (doc.attr 'foo')
+    assert attrs.key?(:attribute_entries)
+    assert_equal 1, attrs[:attribute_entries].size
+    assert_equal 'foo', attrs[:attribute_entries][0].name
+    assert_equal 'ultramega', attrs[:attribute_entries][0].value
+  end
+
+  test 'store inaccessible attribute on document with value' do
+    doc = empty_document :attributes => { 'foo' => 'baz' }
+    attrs = {}
+    attr_name, attr_value = Asciidoctor::Parser.store_attribute 'foo', 'bar', doc, attrs
+    assert_equal 'foo', attr_name
+    assert_equal 'bar', attr_value
+    assert_equal 'baz', (doc.attr 'foo')
+    refute attrs.key?(:attribute_entries)
+  end
+
+  test 'store accessible attribute on document with negated value' do
+    { 'foo!' => nil, '!foo' => nil, 'foo' => nil }.each do |name, value|
+      doc = empty_document
+      doc.set_attribute 'foo', 'baz'
+      attrs = {}
+      attr_name, attr_value = Asciidoctor::Parser.store_attribute name, value, doc, attrs
+      assert_equal name.sub('!', ''), attr_name
+      assert_nil attr_value
+      assert attrs.key?(:attribute_entries)
+      assert_equal 1, attrs[:attribute_entries].size
+      assert_equal 'foo', attrs[:attribute_entries][0].name
+      assert_nil attrs[:attribute_entries][0].value
+    end
+  end
+
+  test 'store inaccessible attribute on document with negated value' do
+    { 'foo!' => nil, '!foo' => nil, 'foo' => nil }.each do |name, value|
+      doc = empty_document :attributes => { 'foo' => 'baz' }
+      attrs = {}
+      attr_name, attr_value = Asciidoctor::Parser.store_attribute name, value, doc, attrs
+      assert_equal name.sub('!', ''), attr_name
+      assert_nil attr_value
+      refute attrs.key?(:attribute_entries)
+    end
+  end
+
   test "collect unnamed attribute" do
     attributes = {}
     line = 'quote'
@@ -202,9 +281,8 @@ context "Parser" do
 
   test 'parse style attribute with id and role' do
     attributes = {1 => 'style#id.role'}
-    style, original_style = Asciidoctor::Parser.parse_style_attribute(attributes)
+    style = Asciidoctor::Parser.parse_style_attribute(attributes)
     assert_equal 'style', style
-    assert_nil original_style
     assert_equal 'style', attributes['style']
     assert_equal 'id', attributes['id']
     assert_equal 'role', attributes['role']
@@ -213,9 +291,8 @@ context "Parser" do
 
   test 'parse style attribute with style, role, id and option' do
     attributes = {1 => 'style.role#id%fragment'}
-    style, original_style = Asciidoctor::Parser.parse_style_attribute(attributes)
+    style = Asciidoctor::Parser.parse_style_attribute(attributes)
     assert_equal 'style', style
-    assert_nil original_style
     assert_equal 'style', attributes['style']
     assert_equal 'id', attributes['id']
     assert_equal 'role', attributes['role']
@@ -226,9 +303,8 @@ context "Parser" do
 
   test 'parse style attribute with style, id and multiple roles' do
     attributes = {1 => 'style#id.role1.role2'}
-    style, original_style = Asciidoctor::Parser.parse_style_attribute(attributes)
+    style = Asciidoctor::Parser.parse_style_attribute(attributes)
     assert_equal 'style', style
-    assert_nil original_style
     assert_equal 'style', attributes['style']
     assert_equal 'id', attributes['id']
     assert_equal 'role1 role2', attributes['role']
@@ -237,9 +313,8 @@ context "Parser" do
 
   test 'parse style attribute with style, multiple roles and id' do
     attributes = {1 => 'style.role1.role2#id'}
-    style, original_style = Asciidoctor::Parser.parse_style_attribute(attributes)
+    style = Asciidoctor::Parser.parse_style_attribute(attributes)
     assert_equal 'style', style
-    assert_nil original_style
     assert_equal 'style', attributes['style']
     assert_equal 'id', attributes['id']
     assert_equal 'role1 role2', attributes['role']
@@ -248,18 +323,16 @@ context "Parser" do
 
   test 'parse style attribute with positional and original style' do
     attributes = {1 => 'new_style', 'style' => 'original_style'}
-    style, original_style = Asciidoctor::Parser.parse_style_attribute(attributes)
+    style = Asciidoctor::Parser.parse_style_attribute(attributes)
     assert_equal 'new_style', style
-    assert_equal 'original_style', original_style
     assert_equal 'new_style', attributes['style']
     assert_equal 'new_style', attributes[1]
   end
 
   test 'parse style attribute with id and role only' do
     attributes = {1 => '#id.role'}
-    style, original_style = Asciidoctor::Parser.parse_style_attribute(attributes)
+    style = Asciidoctor::Parser.parse_style_attribute(attributes)
     assert_nil style
-    assert_nil original_style
     assert_equal 'id', attributes['id']
     assert_equal 'role', attributes['role']
     assert_equal '#id.role', attributes[1]
@@ -267,9 +340,8 @@ context "Parser" do
 
   test 'parse empty style attribute' do
     attributes = {1 => nil}
-    style, original_style = Asciidoctor::Parser.parse_style_attribute(attributes)
+    style = Asciidoctor::Parser.parse_style_attribute(attributes)
     assert_nil style
-    assert_nil original_style
     assert_nil attributes['id']
     assert_nil attributes['role']
     assert_nil attributes[1]
@@ -277,9 +349,8 @@ context "Parser" do
 
   test 'parse style attribute with option should preserve existing options' do
     attributes = {1 => '%header', 'options' => 'footer', 'footer-option' => ''}
-    style, original_style = Asciidoctor::Parser.parse_style_attribute(attributes)
+    style = Asciidoctor::Parser.parse_style_attribute(attributes)
     assert_nil style
-    assert_nil original_style
     assert_equal 'header,footer', attributes['options']
     assert_equal '', attributes['header-option']
     assert_equal '', attributes['footer-option']
@@ -490,6 +561,19 @@ Kismet Chameleon; Johnny Bravo; Lazarus het_Draeke
     assert_equal 'Danger Mouse', doc.attributes['author_2']
     assert_equal 'Lazarus het Draeke', doc.attributes['author_3']
     assert_equal 'het Draeke', doc.attributes['lastname_3']
+  end
+
+  test 'removes formatting before partitioning author defined using author attribute' do
+    input = <<-EOS
+:author: pass:n[http://example.org/community/team.html[Ze_**Project** team]]
+    EOS
+
+    doc = empty_document
+    parse_header_metadata input, doc
+    assert_equal 1, doc.attributes['authorcount']
+    assert_equal '<a href="http://example.org/community/team.html">Ze <strong>Project</strong> team</a>', doc.attributes['authors']
+    assert_equal 'Ze Project', doc.attributes['firstname']
+    assert_equal 'team', doc.attributes['lastname']
   end
 
   test "parse rev number date remark" do

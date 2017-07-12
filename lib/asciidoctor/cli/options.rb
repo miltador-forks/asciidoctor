@@ -56,7 +56,7 @@ Example: asciidoctor -b html5 source.asciidoc
           end
           opts.on('--safe',
                   'set safe mode level to safe (default: unsafe)',
-                  'enables include macros, but restricts access to ancestor paths of source file',
+                  'enables include directives, but prevents access to ancestor paths of source file',
                   'provided for compatibility with the asciidoc command') do
             self[:safe] = SafeMode::SAFE
           end
@@ -84,7 +84,7 @@ Example: asciidoctor -b html5 source.asciidoc
             val = val ? (FORCE_ENCODING ? (val.force_encoding ::Encoding::UTF_8) : val) : ''
             # move leading ! to end for internal processing
             #if !val && key.start_with?('!')
-            #  key = "#{key[1..-1]}!"
+            #  key = %(#{key[1..-1]}!)
             #end
             self[:attributes][key] = val
           end
@@ -128,8 +128,19 @@ Example: asciidoctor -b html5 source.asciidoc
             self[:timings] = true
           end
 
-          opts.on_tail('-h', '--help', 'show this message') do
-            $stdout.puts opts
+          opts.on_tail('-h', '--help [TOPIC]', 'print the help message',
+              'show the command usage if TOPIC is not specified (or not recognized)',
+              'dump the Asciidoctor man page (in troff/groff format) if TOPIC is manpage') do |topic|
+            if topic == 'manpage'
+              if ::File.exist?(manpage_path = (::File.join ::Asciidoctor::ROOT_PATH, 'man', 'asciidoctor.1'))
+                $stdout.puts(::IO.read manpage_path)
+              else
+                $stderr.puts 'asciidoctor: FAILED: man page not found; try `man asciidoctor`'
+                return 1
+              end
+            else
+              $stdout.puts opts
+            end
             return 0
           end
 
@@ -158,7 +169,7 @@ Example: asciidoctor -b html5 source.asciidoc
           args.each do |file|
             if file == '-' || (file.start_with? '-')
               # warn, but don't panic; we may have enough to proceed, so we won't force a failure
-              $stderr.puts "asciidoctor: WARNING: extra arguments detected (unparsed arguments: #{args.map{|a| "'#{a}'"} * ', '}) or incorrect usage of stdin"
+              $stderr.puts %(asciidoctor: WARNING: extra arguments detected (unparsed arguments: '#{args * "', '"}') or incorrect usage of stdin)
             else
               if ::File.readable? file
                 matches = [file]

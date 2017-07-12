@@ -5,7 +5,7 @@ module Helpers
   #
   # Attempts to load the library specified in the first argument using the
   # Kernel#require. Rescues the LoadError if the library is not available and
-  # passes a message to Kernel#fail if on_failure is :abort or Kernel#warn if
+  # passes a message to Kernel#raise if on_failure is :abort or Kernel#warn if
   # on_failure is :warn to communicate to the user that processing is being
   # aborted or functionality is disabled, respectively. If a gem_name is
   # specified, the message communicates that a required gem is not installed.
@@ -17,7 +17,7 @@ module Helpers
   # on_failure - a Symbol that indicates how to handle a load failure (:abort, :warn, :ignore) (default: :abort)
   #
   # returns The return value of Kernel#require if the library is available and can be, or was previously, loaded.
-  # Otherwise, Kernel#fail is called with an appropriate message if on_failure is :abort.
+  # Otherwise, Kernel#raise is called with an appropriate message if on_failure is :abort.
   # Otherwise, Kernel#warn is called with an appropriate message and nil returned if on_failure is :warn.
   # Otherwise, nil is returned.
   def self.require_library name, gem_name = true, on_failure = :abort
@@ -27,14 +27,14 @@ module Helpers
       gem_name = name if gem_name == true
       case on_failure
       when :abort
-        fail %(asciidoctor: FAILED: required gem '#{gem_name}' is not installed. Processing aborted.)
+        raise ::LoadError, %(asciidoctor: FAILED: required gem '#{gem_name}' is not installed. Processing aborted.)
       when :warn
         warn %(asciidoctor: WARNING: optional gem '#{gem_name}' is not installed. Functionality disabled.)
       end
     else
       case on_failure
       when :abort
-        fail %(asciidoctor: FAILED: #{e.message.chomp '.'}. Processing aborted.)
+        raise ::LoadError, %(asciidoctor: FAILED: #{e.message.chomp '.'}. Processing aborted.)
       when :warn
         warn %(asciidoctor: WARNING: #{e.message.chomp '.'}. Functionality disabled.)
       end
@@ -67,12 +67,12 @@ module Helpers
     leading_bytes = (first_line = data[0]).unpack 'C3'
     if COERCE_ENCODING
       utf8 = ::Encoding::UTF_8
-      if (leading_2_bytes = leading_bytes[0, 2]) == BOM_BYTES_UTF_16LE
+      if (leading_2_bytes = leading_bytes.slice 0, 2) == BOM_BYTES_UTF_16LE
         # HACK Ruby messes up trailing whitespace on UTF-16LE, so take a different route
-        return ((data.join.force_encoding ::Encoding::UTF_16LE)[1..-1].encode utf8).each_line.map(&:rstrip)
+        return ((data.join.force_encoding ::Encoding::UTF_16LE)[1..-1].encode utf8).each_line.map {|line| line.rstrip }
       elsif leading_2_bytes == BOM_BYTES_UTF_16BE
         data[0] = (first_line.force_encoding ::Encoding::UTF_16BE)[1..-1]
-        return data.map {|line| "#{((line.force_encoding ::Encoding::UTF_16BE).encode utf8).rstrip}" }
+        return data.map {|line| %(#{((line.force_encoding ::Encoding::UTF_16BE).encode utf8).rstrip}) }
       elsif leading_bytes == BOM_BYTES_UTF_8
         data[0] = (first_line.force_encoding utf8)[1..-1]
       end
@@ -83,7 +83,7 @@ module Helpers
       if leading_bytes == BOM_BYTES_UTF_8
         data[0] = first_line[3..-1]
       end
-      data.map(&:rstrip)
+      data.map {|line| line.rstrip }
     end
   end
 
@@ -104,7 +104,7 @@ module Helpers
     leading_bytes = data.unpack 'C3'
     if COERCE_ENCODING
       utf8 = ::Encoding::UTF_8
-      if (leading_2_bytes = leading_bytes[0, 2]) == BOM_BYTES_UTF_16LE
+      if (leading_2_bytes = leading_bytes.slice 0, 2) == BOM_BYTES_UTF_16LE
         data = (data.force_encoding ::Encoding::UTF_16LE)[1..-1].encode utf8
       elsif leading_2_bytes == BOM_BYTES_UTF_16BE
         data = (data.force_encoding ::Encoding::UTF_16BE)[1..-1].encode utf8
@@ -119,7 +119,7 @@ module Helpers
         data = data[3..-1]
       end
     end
-    data.each_line.map(&:rstrip)
+    data.each_line.map {|line| line.rstrip }
   end
 
   # Public: Efficiently checks whether the specified String resembles a URI
@@ -149,15 +149,13 @@ module Helpers
   # Matches the characters in a URI to encode
   REGEXP_ENCODE_URI_CHARS = /[^\w\-.!~*';:@=+$,()\[\]]/
 
-  # Public: Encode a string for inclusion in a URI
+  # Public: Encode a String for inclusion in a URI.
   #
-  # str - the string to encode
+  # str - the String to URI encode
   #
-  # returns an encoded version of the str
-  def self.encode_uri(str)
-    str.gsub(REGEXP_ENCODE_URI_CHARS) do
-      $&.each_byte.map {|c| sprintf '%%%02X', c}.join
-    end
+  # Returns the String with all URI reserved characters encoded.
+  def self.uri_encode str
+    str.gsub(REGEXP_ENCODE_URI_CHARS) { $&.each_byte.map {|c| sprintf '%%%02X', c }.join }
   end
 
   # Public: Removes the file extension from filename and returns the result
@@ -170,8 +168,8 @@ module Helpers
   #   # => "part1/chapter1"
   #
   # Returns the String filename with the file extension removed
-  def self.rootname(filename)
-    filename[0, filename.length - ::File.extname(filename).length]
+  def self.rootname filename
+    filename.slice 0, ((filename.rindex '.') || filename.length)
   end
 
   # Public: Retrieves the basename of the filename, optionally removing the extension, if present

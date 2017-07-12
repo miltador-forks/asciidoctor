@@ -1952,7 +1952,7 @@ term2::
       assert_xpath '//dl/dt', output, 2
       assert_xpath '//dl/dt/following-sibling::dd', output, 2
       assert_xpath '(//dl/dt)[1][normalize-space(text()) = "term1"]', output, 1
-      assert_xpath %((//dl/dt)[1]/following-sibling::dd/p[text() = "def1#{entity 8201}#{entity 8212}#{entity 8201}and a note"]), output, 1
+      assert_xpath %((//dl/dt)[1]/following-sibling::dd/p[text() = "def1#{decode_char 8201}#{decode_char 8212}#{decode_char 8201}and a note"]), output, 1
       assert_xpath '(//dl/dt)[2][normalize-space(text()) = "term2"]', output, 1
       assert_xpath '(//dl/dt)[2]/following-sibling::dd/p[text() = "def2"]', output, 1
     end
@@ -2774,28 +2774,101 @@ last question::
       assert_css 'bibliodiv > bibliomixed:nth-child(2) > bibliomisc > anchor[xreflabel="[walsh-muellner]"]', output, 1
     end
 
-    test 'should automatically add bibliography style to first list in bibliography section' do
+    test 'should automatically add bibliography style to top-level lists in bibliography section' do
       input = <<-EOS
 [bibliography]
 == Bibliography
 
-content
-
-- [[[taoup]]] Eric Steven Raymond. 'The Art of Unix
-  Programming'. Addison-Wesley. ISBN 0-13-142901-9.
-- [[[walsh-muellner]]] Norman Walsh & Leonard Muellner.
-  'DocBook - The Definitive Guide'. O'Reilly & Associates. 1999.
+.Books
+* [[[taoup]]] Eric Steven Raymond. _The Art of Unix
+  Programming_. Addison-Wesley. ISBN 0-13-142901-9.
+* [[[walsh-muellner]]] Norman Walsh & Leonard Muellner.
+  _DocBook - The Definitive Guide_. O'Reilly & Associates. 1999.
   ISBN 1-56592-580-7.
 
-content
-
-- another
-- list
+.Periodicals
+* [[[doc-writer]]] Doc Writer. _Documentation As Code_. Static Times, 54. August 2016.
       EOS
       doc = document_from_string input
       ulists = doc.find_by :context => :ulist
+      assert_equal 2, ulists.size
       assert_equal ulists[0].style, 'bibliography'
-      assert_nil ulists[1].style
+      assert_equal ulists[1].style, 'bibliography'
+    end
+
+    test 'should not recognize bibliography anchor that begins with a digit' do
+      input = <<-EOS
+[bibliography]
+- [[[1984]]] George Orwell. '1984'. New American Library. 1950.
+      EOS
+
+      output = render_embedded_string input
+      assert_includes output, '[[[1984]]]'
+      assert_xpath '//a[@id="1984"]', output, 0
+    end
+
+    test 'should recognize bibliography anchor that contains a digit but does not start with one' do
+      input = <<-EOS
+[bibliography]
+- [[[_1984]]] George Orwell. '1984'. New American Library. 1950.
+      EOS
+
+      output = render_embedded_string input
+      refute_includes output, '[[[_1984]]]'
+      assert_includes output, '[_1984]'
+      assert_xpath '//a[@id="_1984"]', output, 1
+    end
+
+    test 'should catalog bibliography anchors in bibliography list' do
+      input = <<-EOS
+= Article Title
+
+Please read #{'<<'}Fowler_1997>>.
+
+[bibliography]
+== References
+
+* [[[Fowler_1997]]] Fowler M. _Analysis Patterns: Reusable Object Models_. Addison-Wesley. 1997.
+      EOS
+
+      doc = document_from_string input
+      ids = doc.catalog[:ids]
+      assert ids.key?('Fowler_1997')
+      assert_equal '[Fowler_1997]', ids['Fowler_1997']
+    end
+
+    test 'should use reftext from bibliography anchor at xref and entry' do
+      input = <<-EOS
+= Article Title
+
+Please read #{'<<'}Fowler_1997>>.
+
+[bibliography]
+== References
+
+* [[[Fowler_1997,1]]] Fowler M. _Analysis Patterns: Reusable Object Models_. Addison-Wesley. 1997.
+      EOS
+
+      doc = document_from_string input, :header_footer => false
+      ids = doc.catalog[:ids]
+      assert ids.key?('Fowler_1997')
+      assert_equal '[1]', ids['Fowler_1997']
+      result = doc.convert :header_footer => false
+      assert_xpath '//a[@href="#Fowler_1997"]', result, 1
+      assert_xpath '//a[@href="#Fowler_1997"][text()="[1]"]', result, 1
+      assert_xpath '//a[@id="Fowler_1997"]', result, 1
+      text = (xmlnodes_at_xpath '(//a[@id="Fowler_1997"])[1]/following-sibling::text()', result, 1).text
+      assert text.start_with?('[1] ')
+    end
+
+    test 'should assign reftext of bibliography anchor to xreflabel in DocBook backend' do
+      input = <<-EOS
+[bibliography]
+* [[[Fowler_1997,1]]] Fowler M. _Analysis Patterns: Reusable Object Models_. Addison-Wesley. 1997.
+      EOS
+
+      result = render_embedded_string input, :backend => :docbook
+      assert_includes result, '<anchor xml:id="Fowler_1997" xreflabel="[1]"/>'
     end
   end
 end
@@ -3989,7 +4062,32 @@ puts doc.render # <2>
     assert_xpath '((//calloutlist)[2]/callout)[2][@arearefs = "CO2-2"]', output, 1
   end
 
-  test 'callout list with block content' do
+  test 'callout list retains block content' do
+    input = <<-EOS
+[source, ruby]
+----
+require 'asciidoctor' # <1>
+doc = Asciidoctor::Document.new('Hello, World!') # <2>
+puts doc.render # <3>
+----
+<1> Imports the library
+as a RubyGem
+<2> Creates a new document
+* Scans the lines for known blocks
+* Converts the lines into blocks
+<3> Renders the document
++
+You can write this to file rather than printing to stdout.
+    EOS
+    output = render_embedded_string input
+    assert_xpath '//ol/li', output, 3
+    assert_xpath %((//ol/li)[1]/p[text()="Imports the library\nas a RubyGem"]), output, 1
+    assert_xpath %((//ol/li)[2]//ul), output, 1
+    assert_xpath %((//ol/li)[2]//ul/li), output, 2
+    assert_xpath %((//ol/li)[3]//p), output, 2
+  end
+
+  test 'callout list retains block content when converted to DocBook' do
     input = <<-EOS
 [source, ruby]
 ----
@@ -4097,10 +4195,11 @@ foo::
 
 <1> Not pointing to a callout
     EOS
-    output = render_embedded_string input
+    output, warnings = redirect_streams {|_, err| [(render_embedded_string input), err.string] }
     assert_xpath '//dl//b', output, 0
     assert_xpath '//dl/dd/p[text()="bar <1>"]', output, 1
     assert_xpath '//ol/li/p[text()="Not pointing to a callout"]', output, 1
+    assert_includes warnings, 'line 4: no callouts refer to list item 1'
   end
 
   test 'should not recognize callouts in an indented outline list paragraph' do
@@ -4110,10 +4209,28 @@ foo::
 
 <1> Not pointing to a callout
     EOS
-    output = render_embedded_string input
+    output, warnings = redirect_streams {|_, err| [(render_embedded_string input), err.string] }
     assert_xpath '//ul//b', output, 0
     assert_xpath %(//ul/li/p[text()="foo\nbar <1>"]), output, 1
     assert_xpath '//ol/li/p[text()="Not pointing to a callout"]', output, 1
+    assert_includes warnings, 'line 4: no callouts refer to list item 1'
+  end
+
+  test 'should warn if numbers in callout list are out of sequence' do
+    input = <<-EOS
+----
+<beans> <1>
+  <bean class="com.example.HelloWorld"/>
+</beans>
+----
+<1> Container of beans.
+Beans are fun.
+<3> An actual bean.
+    EOS
+    output, warnings = redirect_streams {|_, err| [(render_embedded_string input), err.string] }
+    assert_xpath '//ol/li', output, 2
+    assert_includes warnings, 'line 8: callout list item index: expected 2 got 3'
+    assert_includes warnings, 'line 8: no callouts refer to list item 2'
   end
 
   test 'should remove line comment chars that precedes callout number' do
@@ -4252,10 +4369,10 @@ context 'Checklists' do
 
     output = render_embedded_string input
     assert_css '.ulist.checklist', output, 1
-    assert_xpath %((/*[@class="ulist checklist"]/ul/li)[1]/p[text()="#{expand_entity 10063} todo"]), output, 1
-    assert_xpath %((/*[@class="ulist checklist"]/ul/li)[2]/p[text()="#{expand_entity 10003} done"]), output, 1
-    assert_xpath %((/*[@class="ulist checklist"]/ul/li)[3]/p[text()="#{expand_entity 10063} another todo"]), output, 1
-    assert_xpath %((/*[@class="ulist checklist"]/ul/li)[4]/p[text()="#{expand_entity 10003} another done"]), output, 1
+    assert_xpath %((/*[@class="ulist checklist"]/ul/li)[1]/p[text()="#{decode_char 10063} todo"]), output, 1
+    assert_xpath %((/*[@class="ulist checklist"]/ul/li)[2]/p[text()="#{decode_char 10003} done"]), output, 1
+    assert_xpath %((/*[@class="ulist checklist"]/ul/li)[3]/p[text()="#{decode_char 10063} another todo"]), output, 1
+    assert_xpath %((/*[@class="ulist checklist"]/ul/li)[4]/p[text()="#{decode_char 10003} another done"]), output, 1
     assert_xpath '(/*[@class="ulist checklist"]/ul/li)[5]/p[text()="plain"]', output, 1
   end
 
@@ -4411,7 +4528,7 @@ listing block in list item 1
 
     doc = document_from_string input
     list = (doc.find_by :context => :ulist).first
-    assert_equal 3, list.items.size 
+    assert_equal 3, list.items.size
     assert_equal 'one', list.items[0].text
     list.items[0].text = 'un'
     assert_equal 'un', list.items[0].text
@@ -4427,7 +4544,7 @@ listing block in list item 1
 
     doc = document_from_string input
     list = (doc.find_by :context => :ulist).first
-    assert_equal 4, list.items.size 
+    assert_equal 4, list.items.size
     list.items[0].remove_sub :quotes
     assert_equal '*one*', list.items[0].text
     refute_includes list.items[0].subs, :quotes

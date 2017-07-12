@@ -152,7 +152,7 @@ context 'Tables' do
 A | here| a | there
 |===
       EOS
-      output = render_embedded_string input
+      output, warnings = redirect_streams {|_, err| [(render_embedded_string input), err.string] }
       assert_css 'table', output, 1
       assert_css 'table > colgroup > col', output, 4
       assert_css 'table > tbody > tr', output, 1
@@ -161,6 +161,7 @@ A | here| a | there
       assert_xpath '/table/tbody/tr/td[2]/p[text()="here"]', output, 1
       assert_xpath '/table/tbody/tr/td[3]/p[text()="a"]', output, 1
       assert_xpath '/table/tbody/tr/td[4]/p[text()="there"]', output, 1
+      assert_includes warnings, 'table missing leading separator'
     end
 
     test 'performs normal substitutions on cell content' do
@@ -172,7 +173,7 @@ A | here| a | there
       EOS
       output = render_embedded_string input
       assert_xpath '//tbody/tr/td[1]/p[text()="Cool new show"]', output, 1
-      assert_xpath %(//tbody/tr/td[2]/p[text()='Coming soon#{expand_entity 8230}#{expand_entity 8203}']), output, 1
+      assert_xpath %(//tbody/tr/td[2]/p[text()='Coming soon#{decode_char 8230}#{decode_char 8203}']), output, 1
     end
 
     test 'should only substitute specialchars for literal table cells' do
@@ -463,6 +464,22 @@ three
       assert_css 'table > tbody > tr', output, 2
     end
 
+    test 'table with implicit header row only' do
+      input = <<-EOS
+|===
+|Column 1 |Column 2
+
+|===
+      EOS
+      output = render_embedded_string input
+      assert_css 'table', output, 1
+      assert_css 'table > colgroup > col', output, 2
+      assert_css 'table > thead', output, 1
+      assert_css 'table > thead > tr', output, 1
+      assert_css 'table > thead > tr > th', output, 2
+      assert_css 'table > tbody', output, 0
+    end
+
     test 'table with implicit header row when other options set' do
       input = <<-EOS
 [%autowidth]
@@ -501,6 +518,53 @@ three
       assert_css 'table > thead', output, 0
       assert_css 'table > tbody', output, 1
       assert_css 'table > tbody > tr', output, 3
+    end
+
+    test 'no implicit header row if cell in first line spans multiple lines' do
+      input = <<-EOS
+[cols=2*]
+|===
+|A1
+
+
+A1 continued|B1
+
+|A2
+|B2
+|===
+      EOS
+      output = render_embedded_string input
+      assert_css 'table', output, 1
+      assert_css 'table > colgroup > col', output, 2
+      assert_css 'table > thead', output, 0
+      assert_css 'table > tbody', output, 1
+      assert_css 'table > tbody > tr', output, 2
+      assert_xpath '(//td)[1]/p', output, 2
+    end
+
+    test 'no implicit header row if AsciiDoc cell in first line spans multiple lines' do
+      input = <<-EOS
+[cols=2*]
+|===
+a|contains AsciiDoc content
+
+* a
+* b
+* c
+a|contains no AsciiDoc content
+
+just text
+|A2
+|B2
+|===
+      EOS
+      output = render_embedded_string input
+      assert_css 'table', output, 1
+      assert_css 'table > colgroup > col', output, 2
+      assert_css 'table > thead', output, 0
+      assert_css 'table > tbody', output, 1
+      assert_css 'table > tbody > tr', output, 2
+      assert_xpath '(//td)[1]//ul', output, 1
     end
 
     test 'no implicit header row if first line blank' do
@@ -551,7 +615,7 @@ three
 [cols="1h,1s,1e",options="header,footer"]
 |====
 |Name |Occupation| Website
-|Octocat |Social coding| http://github.com
+|Octocat |Social coding| https://github.com
 |Name |Occupation| Website
 |====
       EOS
@@ -579,7 +643,7 @@ three
 
 |Name |Occupation| Website
 
-|Octocat |Social coding| http://github.com
+|Octocat |Social coding| https://github.com
 
 |Name |Occupation| Website
 
@@ -804,9 +868,10 @@ a|C
 more C
 |===
       EOS
-      output = render_embedded_string input
+      output, warnings = redirect_streams {|_, err| [(render_embedded_string input), err.string] }
       assert_css 'table', output, 1
       assert_css 'table *', output, 0
+      assert_includes warnings, 'exceeds specified number of columns'
     end
 
     test 'paragraph, verse and literal content' do
@@ -912,18 +977,51 @@ content
       assert_css 'table.tableblock .paragraph', result, 0
     end
 
-    test 'compat mode can be activated in asciidoc table cell' do
+    test 'should reset doctype to default in AsciiDoc table cell' do
       input = <<-EOS
+= Book Title
+:doctype: book
+
+== Chapter 1
+
 |===
 a|
-:compat-mode:
+= AsciiDoc Table Cell
 
-'italic'
+doctype={doctype}
+{backend-html5-doctype-article}
+{backend-html5-doctype-book}
 |===
       EOS
 
-      result = render_embedded_string input
-      assert_css 'table.tableblock td em', result, 1
+      result = render_embedded_string input, :attributes => { 'attribute-missing' => 'skip' }
+      assert_includes result, 'doctype=article'
+      refute_includes result, '{backend-html5-doctype-article}'
+      assert_includes result, '{backend-html5-doctype-book}'
+    end
+
+    test 'should update doctype-related attributes in AsciiDoc table cell when doctype is set' do
+      input = <<-EOS
+= Document Title
+:doctype: article
+
+== Chapter 1
+
+|===
+a|
+= AsciiDoc Table Cell
+:doctype: book
+
+doctype={doctype}
+{backend-html5-doctype-book}
+{backend-html5-doctype-article}
+|===
+      EOS
+
+      result = render_embedded_string input, :attributes => { 'attribute-missing' => 'skip' }
+      assert_includes result, 'doctype=book'
+      refute_includes result, '{backend-html5-doctype-book}'
+      assert_includes result, '{backend-html5-doctype-article}'
     end
 
     test 'asciidoc content' do
@@ -1057,6 +1155,68 @@ key: value <1>
       end
     end
 
+    test 'compat mode can be activated in AsciiDoc table cell' do
+      input = <<-EOS
+|===
+a|
+:compat-mode:
+
+The word 'italic' is emphasized.
+|===
+      EOS
+
+      result = render_embedded_string input
+      assert_xpath '//em[text()="italic"]', result, 1
+    end
+
+    test 'compat mode in AsciiDoc table cell inherits from parent document' do
+      input = <<-EOS
+:compat-mode:
+
+The word 'italic' is emphasized.
+
+[cols=1*]
+|===
+|The word 'oblique' is emphasized.
+a|
+The word 'slanted' is emphasized.
+|===
+
+The word 'askew' is emphasized.
+      EOS
+
+      result = render_embedded_string input
+      assert_xpath '//em[text()="italic"]', result, 1
+      assert_xpath '//em[text()="oblique"]', result, 1
+      assert_xpath '//em[text()="slanted"]', result, 1
+      assert_xpath '//em[text()="askew"]', result, 1
+    end
+
+    test 'compat mode in AsciiDoc table cell can be unset if set in parent document' do
+      input = <<-EOS
+:compat-mode:
+
+The word 'italic' is emphasized.
+
+[cols=1*]
+|===
+|The word 'oblique' is emphasized.
+a|
+:!compat-mode:
+
+The word 'slanted' is not emphasized.
+|===
+
+The word 'askew' is emphasized.
+      EOS
+
+      result = render_embedded_string input
+      assert_xpath '//em[text()="italic"]', result, 1
+      assert_xpath '//em[text()="oblique"]', result, 1
+      assert_xpath '//em[text()="slanted"]', result, 0
+      assert_xpath '//em[text()="askew"]', result, 1
+    end
+
     test 'nested table' do
       input = <<-EOS
 [cols="1,2a"]
@@ -1072,9 +1232,28 @@ key: value <1>
       output = render_embedded_string input
       assert_css 'table', output, 2
       assert_css 'table table', output, 1
-      assert_css 'table table', output, 1
       assert_css 'table > tbody > tr > td:nth-child(2) table', output, 1
       assert_css 'table > tbody > tr > td:nth-child(2) table > tbody > tr > td', output, 2
+    end
+
+    test 'can set format of nested table to psv' do
+      input = <<-EOS
+[cols="2*"]
+|===
+|normal cell
+a|
+[format=psv]
+!===
+!nested cell
+!===
+|===
+      EOS
+
+      output = render_embedded_string input
+      assert_css 'table', output, 2
+      assert_css 'table table', output, 1
+      assert_css 'table > tbody > tr > td:nth-child(2) table', output, 1
+      assert_css 'table > tbody > tr > td:nth-child(2) table > tbody > tr > td', output, 1
     end
 
     test 'toc from parent document should not be included in an AsciiDoc table cell' do
@@ -1295,8 +1474,8 @@ air, moon roof, loaded",4799.00
       assert_xpath '((//tbody/tr)[1]/td)[4]/p[text()="ac, abs, moon"]', output, 1
       assert_xpath %(((//tbody/tr)[2]/td)[3]/p[text()='Venture "Extended Edition"']), output, 1
       assert_xpath '((//tbody/tr)[4]/td)[4]/p[text()="MUST SELL! air, moon roof, loaded"]', output, 1
-      assert_xpath %(((//tbody/tr)[5]/td)[4]/p[text()='"This one#{expand_entity 8217}s gonna to blow you#{expand_entity 8217}re socks off," per the sticker']), output, 1
-      assert_xpath %(((//tbody/tr)[6]/td)[4]/p[text()='Check it, "this one#{expand_entity 8217}s gonna to blow you#{expand_entity 8217}re socks off", per the sticker']), output, 1
+      assert_xpath %(((//tbody/tr)[5]/td)[4]/p[text()='"This one#{decode_char 8217}s gonna to blow you#{decode_char 8217}re socks off," per the sticker']), output, 1
+      assert_xpath %(((//tbody/tr)[6]/td)[4]/p[text()='Check it, "this one#{decode_char 8217}s gonna to blow you#{decode_char 8217}re socks off", per the sticker']), output, 1
     end
 
     test 'csv format shorthand' do
@@ -1314,13 +1493,45 @@ a,b,c
       assert_css 'table > tbody > tr:nth-child(2) > td', output, 3
     end
 
-    test 'custom separator' do
+    test 'tsv as format' do
       input = <<-EOS
-[format="csv", separator=";"]
+[format=tsv]
+,===
+a\tb\tc
+1\t2\t3
+,===
+      EOS
+      output = render_embedded_string input
+      assert_css 'table', output, 1
+      assert_css 'table > colgroup > col', output, 3
+      assert_css 'table > tbody > tr', output, 2
+      assert_css 'table > tbody > tr:nth-child(1) > td', output, 3
+      assert_css 'table > tbody > tr:nth-child(2) > td', output, 3
+    end
+
+    test 'custom csv separator' do
+      input = <<-EOS
+[format=csv,separator=;]
 |===
 a;b;c
 1;2;3
 |===
+      EOS
+      output = render_embedded_string input
+      assert_css 'table', output, 1
+      assert_css 'table > colgroup > col', output, 3
+      assert_css 'table > tbody > tr', output, 2
+      assert_css 'table > tbody > tr:nth-child(1) > td', output, 3
+      assert_css 'table > tbody > tr:nth-child(2) > td', output, 3
+    end
+
+    test 'tab as separator' do
+      input = <<-EOS
+[separator=\\t]
+,===
+a\tb\tc
+1\t2\t3
+,===
       EOS
       output = render_embedded_string input
       assert_css 'table', output, 1
@@ -1542,6 +1753,25 @@ single cell
       assert_xpath '(/table/tbody/tr)[12][@style="background-color: #f8f8f7;"]', output, 1
       assert_xpath '(/table/tbody/tr)[13][@style="background-color: #f8f8f7;"]', output, 1
       assert_xpath '(/table/tbody/tr)[14][@style="background-color: #f8f8f7;"]', output, 1
+    end
+
+    test 'no implicit header row if cell in first line is quoted and spans multiple lines' do
+      input = <<-EOS
+[cols=2*]
+,===
+"A1
+
+A1 continued",B1
+A2,B2
+,===
+      EOS
+      output = render_embedded_string input
+      assert_css 'table', output, 1
+      assert_css 'table > colgroup > col', output, 2
+      assert_css 'table > thead', output, 0
+      assert_css 'table > tbody', output, 1
+      assert_css 'table > tbody > tr', output, 2
+      assert_xpath '(//td)[1]/p[text()="A1 A1 continued"]', output, 1
     end
   end
 end

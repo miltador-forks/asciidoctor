@@ -14,49 +14,19 @@ class Table < AbstractBlock
       @body = body
     end
 
-    alias :[] :send
+    alias [] send
+
+    # Public: Returns the rows grouped by section.
+    #
+    # Creates a 2-dimensional array of two element entries. The first element
+    # is the section name as a symbol. The second element is the Array of rows
+    # in that section. The entries are in document order (head, foot, body).
+    #
+    # Returns a 2-dimentional Array of rows grouped by section.
+    def by_section
+      [[:head, @head], [:foot, @foot], [:body, @body]]
+    end
   end
-
-  # Public: A String key that specifies the default table format in AsciiDoc (psv)
-  DEFAULT_DATA_FORMAT = 'psv'
-
-  # Public: An Array of String keys that represent the table formats in AsciiDoc
-  DATA_FORMATS = ['psv', 'dsv', 'csv']
-
-  # Public: A Hash mapping the AsciiDoc table formats to their default delimiters
-  DEFAULT_DELIMITERS = {
-    'psv' => '|',
-    'dsv' => ':',
-    'csv' => ','
-  }
-
-  # Public: A Hash mapping styles abbreviations to styles that can be applied
-  # to a table column or cell
-  TEXT_STYLES = {
-    'd' => :none,
-    's' => :strong,
-    'e' => :emphasis,
-    'm' => :monospaced,
-    'h' => :header,
-    'l' => :literal,
-    'v' => :verse,
-    'a' => :asciidoc
-  }
-
-  # Public: A Hash mapping alignment abbreviations to alignments (horizontal
-  # and vertial) that can be applies to a table column or cell
-  ALIGNMENTS = {
-    :h => {
-      '<' => 'left',
-      '>' => 'right',
-      '^' => 'center'
-    },
-    :v => {
-      '<' => 'top',
-      '>' => 'bottom',
-      '^' => 'middle'
-    }
-  }
 
   # Public: Get/Set the columns for this table
   attr_accessor :columns
@@ -67,6 +37,9 @@ class Table < AbstractBlock
 
   # Public: Boolean specifies whether this table has a header row
   attr_accessor :has_header_option
+
+  # Public: Get the caption for this table
+  attr_reader :caption
 
   def initialize parent, attributes
     super parent, :table
@@ -160,7 +133,7 @@ class Table < AbstractBlock
   # by the options on the table
   #
   # returns nothing
-  def partition_header_footer(attributes)
+  def partition_header_footer(attrs)
     # set rowcount before splitting up body rows
     @attributes['rowcount'] = @rows.body.size
 
@@ -175,7 +148,7 @@ class Table < AbstractBlock
       @rows.head = [head]
     end
 
-    if num_body_rows > 0 && attributes.key?('footer-option')
+    if num_body_rows > 0 && attrs.key?('footer-option')
       @rows.foot = [@rows.body.pop]
     end
 
@@ -200,7 +173,7 @@ class Table::Column < AbstractNode
   end
 
   # Public: An alias to the parent block (which is always a Table)
-  alias :table :parent
+  alias table parent
 
   # Internal: Calculate and assign the widths (percentage and absolute) for this column
   #
@@ -235,7 +208,7 @@ class Table::Cell < AbstractNode
   attr_accessor :rowspan
 
   # Public: An alias to the parent block (which is always a Column)
-  alias :column :parent
+  alias column parent
 
   # Public: The internal Asciidoctor::Document for a cell that has the asciidoc style
   attr_reader :inner_document
@@ -258,7 +231,7 @@ class Table::Cell < AbstractNode
       if opts[:strip_text]
         if cell_style == :literal || cell_style == :verse
           cell_text = cell_text.rstrip
-          cell_text = cell_text.slice 1, cell_text.length while cell_text.start_with? EOL
+          cell_text = cell_text.slice 1, cell_text.length - 1 while cell_text.start_with? LF
         else
           cell_text = cell_text.strip
         end
@@ -277,15 +250,15 @@ class Table::Cell < AbstractNode
       # the included content cannot expect to match conditional terminators in the remaining
       # lines of table cell content, it must be self-contained logic
       # QUESTION should we reset cell_text to nil?
-      inner_document_lines = cell_text.split EOL, -1
-      unless inner_document_lines.empty? || !inner_document_lines[0].include?('::')
-        unprocessed_lines = inner_document_lines[0]
-        processed_lines = PreprocessorReader.new(@document, unprocessed_lines).readlines
-        if processed_lines != unprocessed_lines
+      # QUESTION is is faster to check for :: before splitting?
+      inner_document_lines = cell_text.split LF, -1
+      if (unprocessed_line1 = inner_document_lines[0]).include? '::'
+        preprocessed_lines = (PreprocessorReader.new @document, [unprocessed_line1]).readlines
+        unless unprocessed_line1 == preprocessed_lines[0] && preprocessed_lines.size < 2
           inner_document_lines.shift
-          inner_document_lines.unshift(*processed_lines)
+          inner_document_lines.unshift(*preprocessed_lines) unless preprocessed_lines.empty?
         end
-      end
+      end unless inner_document_lines.empty?
       @inner_document = Document.new(inner_document_lines, :header_footer => false, :parent => @document, :cursor => opts[:cursor])
       @document.attributes['doctitle'] = parent_doctitle unless parent_doctitle.nil?
     end
@@ -341,11 +314,24 @@ end
 # instantiated, the row is closed if the cell satisifies the column count and,
 # finally, a new buffer is allocated to track the next cell.
 class Table::ParserContext
+  # Public: An Array of String keys that represent the table formats in AsciiDoc
+  #--
+  # QUESTION should we recognize !sv as a valid format value?
+  FORMATS = ['psv', 'csv', 'dsv', 'tsv'].to_set
+
+  # Public: A Hash mapping the AsciiDoc table formats to default delimiters
+  DELIMITERS = {
+    'psv' => ['|', /\|/],
+    'csv' => [',', /,/],
+    'dsv' => [':', /:/],
+    'tsv' => [%(\t), /\t/],
+    '!sv' => ['!', /!/]
+  }
 
   # Public: The Table currently being parsed
   attr_accessor :table
 
-  # Public: The AsciiDoc table format (psv, dsv or csv)
+  # Public: The AsciiDoc table format (psv, dsv, or csv)
   attr_accessor :format
 
   # Public: Get the expected column count for a row
@@ -367,22 +353,38 @@ class Table::ParserContext
   def initialize reader, table, attributes = {}
     @reader = reader
     @table = table
-    # TODO if reader.cursor becomes a reference, this would require .dup
+    # IMPORTANT if reader.cursor becomes a reference, this assignment would require .dup
     @last_cursor = reader.cursor
-    if (@format = attributes['format'])
-      unless Table::DATA_FORMATS.include? @format
-        raise %(Illegal table format: #{@format})
+
+    if attributes.key? 'format'
+      if FORMATS.include?(xsv = attributes['format'])
+        if xsv == 'tsv'
+          # NOTE tsv is just an alias for csv with a tab separator
+          @format = 'csv'
+        elsif (@format = xsv) == 'psv' && table.document.nested?
+          xsv = '!sv'
+        end
+      else
+        warn %(asciidoctor: ERROR: #{reader.prev_line_info}: illegal table format: #{xsv})
+        @format, xsv = 'psv', (table.document.nested? ? '!sv' : 'psv')
       end
     else
-      @format = Table::DEFAULT_DATA_FORMAT
+      @format, xsv = 'psv', (table.document.nested? ? '!sv' : 'psv')
     end
 
-    if @format == 'psv' && !(attributes.key? 'separator') && table.document.nested?
-      @delimiter = '!'
+    if attributes.key? 'separator'
+      if (sep = attributes['separator']).nil_or_empty?
+        @delimiter, @delimiter_re = DELIMITERS[xsv]
+      # QUESTION should we support any other escape codes or multiple tabs?
+      elsif sep == '\t'
+        @delimiter, @delimiter_re = DELIMITERS['tsv']
+      else
+        @delimiter, @delimiter_re = sep, /#{::Regexp.escape sep}/
+      end
     else
-      @delimiter = attributes['separator'] || Table::DEFAULT_DELIMITERS[@format]
+      @delimiter, @delimiter_re = DELIMITERS[xsv]
     end
-    @delimiter_re = /#{Regexp.escape @delimiter}/
+
     @colcount = table.columns.empty? ? -1 : table.columns.size
     @buffer = ''
     @cellspecs = []
@@ -409,12 +411,19 @@ class Table::ParserContext
     @delimiter_re.match(line)
   end
 
-  # Public: Skip beyond the matched delimiter because it was a false positive
-  # (either because it was escaped or in a quoted context)
+  # Public: Skip past the matched delimiter because it's inside quoted text.
   #
   # returns the String after the match
-  def skip_matched_delimiter(match, escaped = false)
-    @buffer = %(#{@buffer}#{escaped ? match.pre_match.chop : match.pre_match}#{@delimiter})
+  def skip_past_delimiter(match)
+    @buffer = %(#{@buffer}#{match.pre_match}#{@delimiter})
+    match.post_match
+  end
+
+  # Public: Skip past the matched delimiter because it's escaped.
+  #
+  # returns the String after the match
+  def skip_past_escaped_delimiter(match)
+    @buffer = %(#{@buffer}#{match.pre_match.chop}#{@delimiter})
     match.post_match
   end
 
@@ -528,8 +537,8 @@ class Table::ParserContext
             cell_text = cell_text[1...-1].strip
           end
 
-          # collapses escaped quotes
-          cell_text = cell_text.tr_s('"', '"')
+          # collapse escaped quotes
+          cell_text = cell_text.squeeze('"')
         end
       end
     end

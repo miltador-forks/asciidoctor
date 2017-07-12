@@ -17,37 +17,22 @@ end
 
 begin
   require 'rake/testtask'
-  Rake::TestTask.new(:test) do |test|
+  Rake::TestTask.new(:test) do |t|
     prepare_test_env
     puts %(LANG: #{ENV['LANG']}) if ENV.key? 'TRAVIS_BUILD_ID'
-    test.libs << 'test'
-    test.pattern = 'test/**/*_test.rb'
-    test.verbose = true
-    test.warning = true
+    t.libs << 'test'
+    t.pattern = 'test/**/*_test.rb'
+    t.verbose = true
+    t.warning = true
   end
-  task :default => :test
+  task :default => 'test:all'
 rescue LoadError
 end
-
-=begin
-# Run tests with Encoding.default_external set to US-ASCII
-begin
-  Rake::TestTask.new(:test_us_ascii) do |test|
-    prepare_test_env
-    puts "LANG: #{ENV['LANG']}"
-    test.libs << 'test'
-    test.pattern = 'test/**/*_test.rb'
-    test.ruby_opts << '-EUS-ASCII' if RUBY_VERSION >= '1.9'
-    test.verbose = true
-    test.warning = true
-  end
-rescue LoadError
-end
-=end
 
 begin
   require 'cucumber/rake/task'
   Cucumber::Rake::Task.new(:features) do |t|
+    t.cucumber_opts = %w(-f progress)
   end
 rescue LoadError
 end
@@ -75,7 +60,7 @@ end
 
 namespace :test do
   desc 'Run unit and feature tests'
-  task :all => [:test,:features]
+  task :all => [:test, :features]
 end
 
 =begin
@@ -95,7 +80,6 @@ begin
   require 'yard'
   require 'yard-tomdoc'
   require './lib/asciidoctor'
-  require './lib/asciidoctor/extensions'
 
   # Prevent YARD from breaking command statements in literal paragraphs
   class CommandBlockPostprocessor < Asciidoctor::Extensions::Postprocessor
@@ -141,4 +125,36 @@ end
 desc 'Open an irb session preloaded with this library'
 task :console do
   sh 'bundle console', :verbose => false
+end
+
+namespace :build do
+desc 'Trigger builds for all dependent projects on Travis CI'
+  task :dependents do
+    if ENV['TRAVIS'].to_s == 'true'
+      next unless ENV['TRAVIS_PULL_REQUEST'].to_s == 'false' && (ENV['TRAVIS_JOB_NUMBER'].to_s.end_with? '.1')
+    end
+    next unless (token = ENV['TRAVIS_TOKEN'])
+    require 'net/http'
+    %w(
+      asciidoctor/asciidoctor.js
+    ).each do |project|
+      org, name = project.split '/', 2
+      header = {
+        'Content-Type' => 'application/json',
+        'Accept' => 'application/json',
+        'Travis-API-Version' => '3',
+        'Authorization' => %(token #{token})
+      }
+      payload = '{ "request": { "branch": "master" } }'
+      (http = Net::HTTP.new 'api.travis-ci.org', 443).use_ssl = true
+      request = Net::HTTP::Post.new %(/repo/#{org}%2F#{name}/requests), header
+      request.body = payload
+      response = http.request request
+      if response.code == '202'
+        puts %(Build successfuly triggered on #{project})
+      else
+        warn %(Unable to build #{project}: #{response.code} - #{response.message})
+      end
+    end
+  end
 end
