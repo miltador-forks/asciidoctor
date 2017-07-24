@@ -145,9 +145,8 @@ module Asciidoctor
     # Compliance value: false
     #define :congruent_block_delimiters, true
 
-    # AsciiDoc supports both single-line and underlined
-    # section titles.
-    # This option disables the underlined variant.
+    # AsciiDoc supports both atx (single-line) and setext (underlined) section titles.
+    # This option can be used to disable the setext variant.
     # Compliance value: true
     define :underline_style_section_titles, true
 
@@ -278,9 +277,9 @@ module Asciidoctor
 
   ADMONITION_STYLES = ['NOTE', 'TIP', 'IMPORTANT', 'WARNING', 'CAUTION'].to_set
 
-  ADMONITION_STYLE_LEADERS = ['N', 'T', 'I', 'W', 'C'].to_set
+  ADMONITION_STYLE_HEADS = ['N', 'T', 'I', 'W', 'C'].to_set
 
-  CALLOUT_LIST_LEADERS = ['<', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0'].to_set
+  CALLOUT_LIST_HEADS = ['<', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0'].to_set
 
   PARAGRAPH_STYLES = ['comment', 'example', 'literal', 'listing', 'normal', 'pass', 'quote', 'sidebar', 'source', 'verse', 'abstract', 'partintro'].to_set
 
@@ -303,7 +302,7 @@ module Asciidoctor
     '```'  => [:fenced_code, ::Set.new]
   }
 
-  DELIMITED_BLOCK_LEADERS = DELIMITED_BLOCKS.keys.map {|key| key.slice 0, 2 }.to_set
+  DELIMITED_BLOCK_HEADS = DELIMITED_BLOCKS.keys.map {|key| key.slice 0, 2 }.to_set
 
   LAYOUT_BREAK_CHARS = {
     '\'' => :thematic_break,
@@ -334,6 +333,8 @@ module Asciidoctor
     'upperalpha' => 'A',
     'upperroman' => 'I'
   }
+
+  ATTR_REF_HEAD = '{'
 
   LIST_CONTINUATION = '+'
 
@@ -434,7 +435,7 @@ module Asciidoctor
     #   v1.0, 2013-01-01: Ring in the new year release
     #   1.0, Jan 01, 2013
     #
-    RevisionInfoLineRx = /^(?:\D*(.*?),)?(?: *(?!:)(.*?))(?: *(?!^): *(.*))?$/
+    RevisionInfoLineRx = /^(?:\D*(.*?),)? *(?!:)(.*?)(?: *(?!^),?: *(.*))?$/
 
     # Matches the title and volnum in the manpage doctype.
     #
@@ -609,35 +610,35 @@ module Asciidoctor
     #   This is a block comment.
     #   It can span one or more lines.
     #   ////
-    CommentBlockRx = %r(^/{4,}$)
+    #CommentBlockRx = %r(^/{4,}$)
 
     # Matches a comment line.
     #
     # Examples
     #
-    #   // an then whatever
+    #   // note to author
     #
-    CommentLineRx = %r(^//(?=[^/]|$))
+    #CommentLineRx = %r(^//(?=[^/]|$))
 
     ## Section titles
 
-    # Matches a single-line (Atx-style) section title.
+    # Matches an Atx (single-line) section title.
     #
     # Examples
     #
     #   == Foo
-    #   # ^ a level 1 (h2) section title
+    #   // ^ a level 1 (h2) section title
     #
     #   == Foo ==
-    #   # ^ also a level 1 (h2) section title
+    #   // ^ also a level 1 (h2) section title
     #
-    # match[1] is the delimiter, whose length determines the level
-    # match[2] is the title itself
-    # match[3] is an inline anchor, which becomes the section id
-    AtxSectionRx = /^(=={0,5}|#\#{0,5})[ \t]+(.+?)(?:[ \t]+\1)?$/
+    AtxSectionTitleRx = /^(=={0,5})[ \t]+(.+?)(?:[ \t]+\1)?$/
 
-    # Matches the restricted section name for a two-line (Setext-style) section title.
-    # The name cannot begin with a dot and has at least one alphanumeric character.
+    # Matches an extended Atx section title that includes support for the Markdown variant.
+    ExtAtxSectionTitleRx = /^(=={0,5}|#\#{0,5})[ \t]+(.+?)(?:[ \t]+\1)?$/
+
+    # Matches the title only (first line) of an Setext (two-line) section title.
+    # The title cannot begin with a dot and must have at least one alphanumeric character.
     SetextSectionTitleRx = /^((?=.*#{CG_WORD}+.*)[^.].*?)$/
 
     # Matches an anchor (i.e., id + optional reference text) inside a section title.
@@ -654,14 +655,14 @@ module Asciidoctor
     # NOTE uppercase chars are not included since the expression is used on a lowercased string
     InvalidSectionIdCharsRx = /&(?:[a-z][a-z]+\d{0,2}|#\d\d\d{0,4}|#x[\da-f][\da-f][\da-f]{0,3});|[^#{CC_WORD}]+?/
 
-    # Matches the block style used to designate a section title as a floating title.
+    # Matches the block style used to designate a discrete (aka free-floating) heading.
     #
     # Examples
     #
-    #   [float]
-    #   = Floating Title
+    #   [discrete]
+    #   = Discrete Heading
     #
-    FloatingTitleStyleRx = /^(?:float|discrete)\b/
+    DiscreteHeadingStyleRx = /^(?:discrete|float)\b/
 
     ## Lists
 
@@ -1030,7 +1031,7 @@ module Asciidoctor
     #   *** or * * * (horizontal rule, Markdown)
     #   ___ or _ _ _ (horizontal rule, Markdown)
     #
-    HybridLayoutBreakRx = /^(?:'{3,}|<{3,}|([-*_])( *)\1\2\1)$/
+    ExtLayoutBreakRx = /^(?:'{3,}|<{3,}|([-*_])( *)\1\2\1)$/
 
     ## General
 
@@ -1536,9 +1537,11 @@ module Asciidoctor
               # NOTE in this case, copycss is a source location (but cannot be a URI)
               stylesheet_src = doc.normalize_system_path stylesheet_src
             end
-            stylesheet_dst = doc.normalize_system_path stylesheet, stylesoutdir, (doc.safe >= SafeMode::SAFE ? outdir : nil)
-            if stylesheet_src != stylesheet_dst && (stylesheet_content = doc.read_asset stylesheet_src, :warn_on_failure => true, :label => 'stylesheet')
-              ::IO.write stylesheet_dst, stylesheet_content
+            stylesheet_dest = doc.normalize_system_path stylesheet, stylesoutdir, (doc.safe >= SafeMode::SAFE ? outdir : nil)
+            # NOTE don't warn if src can't be read and dest already exists (see #2323)
+            if stylesheet_src != stylesheet_dest && (stylesheet_data = doc.read_asset stylesheet_src,
+                :warn_on_failure => !(::File.file? stylesheet_dest), :label => 'stylesheet')
+              ::IO.write stylesheet_dest, stylesheet_data
             end
           end
 

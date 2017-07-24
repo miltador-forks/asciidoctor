@@ -162,9 +162,8 @@ module Extensions
     # QUESTION is parse_content the right method name? should we wrap in open block automatically?
     def parse_content parent, content, attributes = nil
       reader = Reader === content ? content : (Reader.new content)
-      while reader.has_more_lines?
-        block = Parser.next_block reader, parent, (attributes ? attributes.dup : {})
-        parent << block if block
+      while ((block = Parser.next_block reader, parent, (attributes ? attributes.dup : {})) && parent << block) ||
+          reader.has_more_lines?
       end
       parent
     end
@@ -486,7 +485,7 @@ module Extensions
     include SyntaxDsl
 
     def contexts *value
-      option :contexts, value.flatten
+      option :contexts, value.flatten.to_set
     end
     alias on_contexts contexts
     alias on_context contexts
@@ -1426,7 +1425,7 @@ module Extensions
       unless args.empty?
         raise ::ArgumentError, %(Wrong number of arguments (#{argc} for 1..2))
       end
-      groups[name] = resolved_group
+      groups[name.to_sym] = resolved_group
     end
 
     # Public: Unregister all statically-registered extension groups.

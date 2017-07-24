@@ -380,7 +380,7 @@ anchor:foo[b[a\]r]text'
 
   test 'xref using angled bracket syntax with path sans extension' do
     doc = document_from_string '<<tigers#>>', :header_footer => false
-    assert_xpath '//a[@href="tigers.html"][text() = "[tigers]"]', doc.render, 1
+    assert_xpath '//a[@href="tigers.html"][text() = "tigers.html"]', doc.render, 1
   end
 
   test 'inter-document xref should not truncate after period if path has no extension' do
@@ -412,12 +412,12 @@ anchor:foo[b[a\]r]text'
 
   test 'xref using angled bracket syntax with path and extension' do
     doc = document_from_string '<<tigers.adoc#>>', :header_footer => false
-    assert_xpath '//a[@href="tigers.html"][text() = "[tigers]"]', doc.render, 1
+    assert_xpath '//a[@href="tigers.html"][text() = "tigers.html"]', doc.render, 1
   end
 
   test 'xref using angled bracket syntax with path and fragment' do
     doc = document_from_string '<<tigers#about>>', :header_footer => false
-    assert_xpath '//a[@href="tigers.html#about"][text() = "[tigers#about]"]', doc.render, 1
+    assert_xpath '//a[@href="tigers.html#about"][text() = "tigers.html"]', doc.render, 1
   end
 
   test 'xref using angled bracket syntax with path, fragment and text' do
@@ -575,7 +575,7 @@ See <<foobaz>>.
       old_verbose, $VERBOSE = $VERBOSE, true
       output, warnings = redirect_streams {|_, err| [(render_embedded_string input), err.string] }
       assert_xpath '//a[@href="#foobaz"][text() = "[foobaz]"]', output, 1
-      refute warnings.empty?
+      refute_empty warnings
       assert_includes warnings, 'asciidoctor: WARNING: invalid reference: foobaz'
     ensure
       $VERBOSE = old_verbose

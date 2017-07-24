@@ -77,12 +77,12 @@ module Substitutors
   # Public: Apply the specified substitutions to the source.
   #
   # source  - The String or String Array of text to process; must not be nil.
-  # subs    - The substitutions to perform; can be a Symbol or Symbol Array; must not be nil (default: :normal).
-  # expand  - A Boolean to control whether substitution aliases are expanded (default: false).
+  # subs    - The substitutions to perform; can be a Symbol, Symbol Array or nil (default: NORMAL_SUBS).
+  # expand  - A Boolean (or nil) to control whether substitution aliases are expanded (default: nil).
   #
   # Returns a String or String Array with substitutions applied, matching the type of source argument.
-  def apply_subs source, subs = NORMAL_SUBS, expand = false
-    if source.empty? || subs.empty?
+  def apply_subs source, subs = NORMAL_SUBS, expand = nil
+    if source.empty? || !subs
       return source
     elsif expand
       if ::Symbol === subs
@@ -101,6 +101,8 @@ module Substitutors
           return source
         end
       end
+    elsif subs.empty?
+      return source
     end
 
     text = (multiline = ::Array === source) ? source * LF : source
@@ -117,7 +119,7 @@ module Substitutors
       when :quotes
         text = sub_quotes text
       when :attributes
-        text = sub_attributes(text.split LF, -1) * LF if text.include? '{'
+        text = sub_attributes(text.split LF, -1) * LF if text.include? ATTR_REF_HEAD
       when :replacements
         text = sub_replacements text
       when :macros
@@ -190,9 +192,9 @@ module Substitutors
       if (boundary = m[4]) # $$, ++, or +++
         # skip ++ in compat mode, handled as normal quoted text
         if compat_mode && boundary == '++'
-          next m[2].nil_or_empty? ?
-              %(#{m[1]}#{m[3]}++#{extract_passthroughs m[5]}++) :
-              %(#{m[1]}[#{m[2]}]#{m[3]}++#{extract_passthroughs m[5]}++)
+          next m[2] ?
+              %(#{m[1]}[#{m[2]}]#{m[3]}++#{extract_passthroughs m[5]}++) :
+              %(#{m[1]}#{m[3]}++#{extract_passthroughs m[5]}++)
         end
 
         attributes = m[2]
@@ -504,7 +506,7 @@ module Substitutors
             $&
           end
         end
-      } if line.include? '{'
+      } if line.include? ATTR_REF_HEAD
 
       result << line unless reject || (reject_if_empty && line.empty?)
     end
@@ -649,7 +651,7 @@ module Substitutors
         # alias match for Ruby 1.8.7 compat
         m = $~
         # honor the escape
-        if (captured = m[0]).start_with? RS
+        if (captured = $&).start_with? RS
           next captured[1..-1]
         end
 
@@ -658,7 +660,10 @@ module Substitutors
         else
           type, posattrs = 'image', ['alt', 'width', 'height']
         end
-        target = m[1]
+        if (target = m[1]).include? ATTR_REF_HEAD
+          # TODO remove this special case once titles use normal substitution order
+          target = sub_attributes target
+        end
         @document.register(:images, target) unless type == 'icon'
         attrs = parse_attributes(m[2], posattrs, :unescape_input => true)
         attrs['alt'] ||= (attrs['default-alt'] = Helpers.basename(target, true).tr('_-', ' '))
@@ -1096,7 +1101,7 @@ module Substitutors
   # Returns The converted String text for the quoted text region
   def convert_quoted_text(match, type, scope)
     if match[0].start_with? RS
-      if scope == :constrained && !(attrs = match[2]).nil_or_empty?
+      if scope == :constrained && (attrs = match[2])
         unescaped_attrs = %([#{attrs}])
       else
         return match[0][1..-1]
@@ -1130,7 +1135,7 @@ module Substitutors
   # Returns a Hash of attributes (role and id only)
   def parse_quoted_text_attributes str
     # NOTE attributes are typically resolved after quoted text, so substitute eagerly
-    str = sub_attributes str if str.include? '{'
+    str = sub_attributes str if str.include? ATTR_REF_HEAD
     # for compliance, only consider first positional attribute
     str = str.slice 0, (str.index ',') if str.include? ','
 
@@ -1173,7 +1178,7 @@ module Substitutors
   def parse_attributes(attrline, posattrs = ['role'], opts = {})
     return unless attrline
     return {} if attrline.empty?
-    attrline = @document.sub_attributes(attrline) if opts[:sub_input] && (attrline.include? '{')
+    attrline = @document.sub_attributes(attrline) if opts[:sub_input] && (attrline.include? ATTR_REF_HEAD)
     attrline = unescape_bracketed_text(attrline) if opts[:unescape_input]
     # substitutions are only performed on attribute values if block is not nil
     block = opts.fetch(:sub_result, true) ? self : nil

@@ -85,6 +85,23 @@ second paragraph
       assert_xpath '//p', output, 2
     end
 
+    test 'comment block between paragraphs offset by blank lines inside delimited block' do
+      input = <<-EOS
+====
+first paragraph
+
+////
+block comment
+////
+
+second paragraph
+====
+      EOS
+      output = render_embedded_string input
+      refute_match(/block comment/, output)
+      assert_xpath '//p', output, 2
+    end
+
     test 'adjacent comment block between paragraphs' do
       input = <<-EOS
 first paragraph
@@ -133,7 +150,7 @@ block comment
       EOS
 
       output = render_embedded_string input
-      assert !output.strip.empty?, "Line should be emitted => #{input.rstrip}"
+      refute_empty output.strip, "Line should be emitted => #{input.rstrip}"
     end
 
     test 'preprocessor directives should not be processed within comment block within block metadata' do
@@ -181,9 +198,9 @@ line should not be rendered
       assert_xpath '//p', output, 0
     end
 
-    # WARNING if first line of content is a directive, it will get interpretted before we know it's a comment block
-    # it happens because we always look a line ahead...not sure what we can do about it
-    test 'preprocessor directives should not be processed within comment paragraph' do
+    # WARNING this assertion fails if the directive is the first line of the paragraph instead of the second
+    # it happens because we always look a line ahead; not sure what we can do about it
+    test 'preprocessor directives should not be processed on subsequent lines of a comment paragraph' do
       input = <<-EOS
 [comment]
 first line of content
@@ -236,6 +253,24 @@ not this text
       result = render_embedded_string input
       assert_xpath '/*[@class="exampleblock"]', result, 1
       assert_xpath '/*[@class="exampleblock"]//*[normalize-space(text())="not this text"]', result, 1
+    end
+
+    # NOTE this test verifies the nil return value of Parser#next_block
+    test 'should not drop content that follows skipped content inside a delimited block' do
+      input = <<-EOS
+====
+paragraph
+
+[comment#idname]
+skip
+
+paragraph
+====
+      EOS
+      result = render_embedded_string input
+      assert_xpath '/*[@class="exampleblock"]', result, 1
+      assert_xpath '/*[@class="exampleblock"]//*[@class="paragraph"]', result, 2
+      assert_xpath '//*[@class="paragraph"][@id="idname"]', result, 0
     end
   end
 
@@ -605,7 +640,7 @@ You just write.
       assert_nil doc.blocks[0].number
       output = doc.render
       assert_xpath '(//*[@class="exampleblock"])[1]/*[@class="title"][text()="Look! Writing Docs with AsciiDoc"]', output, 1
-      assert !doc.attributes.has_key?('example-number')
+      refute doc.attributes.has_key?('example-number')
     end
 
     test 'automatic caption can be turned off and on and modified' do
@@ -1127,7 +1162,7 @@ This is a passthrough block.
       EOS
 
       block = block_from_string input
-      assert !block.nil?
+      refute_nil block
       assert_equal 1, block.lines.size
       assert_equal 'This is a passthrough block.', block.source
     end
@@ -1402,7 +1437,7 @@ section paragraph
       assert_xpath '//*[@id="content"]/h1[text()="Section Title"]', output, 1
       assert_xpath '//*[@class="paragraph"]', output, 1
       assert_xpath '//*[@class="paragraph"]/*[@class="title"][text()="Block title"]', output, 1
-      assert !errors.empty?
+      refute_empty errors
       assert_match(/only book doctypes can contain level 0 sections/, errors)
     end
 
@@ -1433,7 +1468,7 @@ Block content
 
       output = render_embedded_string input
       assert output.include?('Block content')
-      assert !output.include?('[]')
+      refute output.include?('[]')
     end
 
     test 'empty block anchor should not appear in output' do
@@ -1446,7 +1481,7 @@ Block content
 
       output = render_embedded_string input
       assert output.include?('Block content')
-      assert !output.include?('[[]]')
+      refute output.include?('[[]]')
     end
   end
 
@@ -1726,7 +1761,7 @@ image::images/tiger.png[Tiger]
       output = doc.render
       assert_xpath '//*[@class="imageblock"]//img[@src="images/tiger.png"][@alt="Tiger"]', output, 1
       assert_xpath '//*[@class="imageblock"]/*[@class="title"][text() = "Voila! The AsciiDoc Tiger"]', output, 1
-      assert !doc.attributes.has_key?('figure-number')
+      refute doc.attributes.has_key?('figure-number')
     end
 
     test 'can align image in DocBook backend' do
@@ -1809,7 +1844,7 @@ image::{bogus}[]
       EOS
 
       output, warnings = redirect_streams {|_, err| [(render_embedded_string input), err.string] }
-      assert output.strip.empty?
+      assert_empty output.strip
       assert_includes warnings, 'dropping line containing reference to missing attribute'
     end
 
@@ -1821,7 +1856,7 @@ image::{bogus}[]
       EOS
 
       output, warnings = redirect_streams {|_, err| [(render_embedded_string input), err.string] }
-      assert output.strip.empty?
+      assert_empty output.strip
       assert_includes warnings, 'dropping line containing reference to missing attribute'
     end
 
@@ -1837,7 +1872,7 @@ image::{bogus}[]
       output, warnings = redirect_streams {|_, err| [(render_embedded_string input), err.string] }
       assert_css 'img', output, 0
       assert_css 'h2', output, 1
-      assert !output.include?('== Section Title')
+      refute output.include?('== Section Title')
       assert_includes warnings, 'dropping line containing reference to missing attribute'
     end
 
@@ -2651,7 +2686,7 @@ public class Printer {
       assert_match(/\.<em>out<\/em>\./, output, 1)
       assert_match(/\*asterisks\*/, output, 1)
       assert_match(/<strong>bold<\/strong>/, output, 1)
-      assert !output.include?(Asciidoctor::Substitutors::PASS_START)
+      refute output.include?(Asciidoctor::Substitutors::PASS_START)
     end
 
     test 'should link to CodeRay stylesheet if source-highlighter is coderay and linkcss is set' do
@@ -2743,7 +2778,7 @@ puts HTML::Pipeline.new(filters, {}).call(input)[:output]
 :source-highlighter: coderay
       EOS
       doc = document_from_string input, :safe => Asciidoctor::SafeMode::SERVER
-      assert doc.attributes['source-highlighter'].nil?
+      assert_nil doc.attributes['source-highlighter']
     end
   end
 
@@ -3151,7 +3186,7 @@ content
       block = doc.blocks.first
       assert_nil block.id
       assert_nil(block.attr 'reftext')
-      assert !doc.catalog[:ids].has_key?('illegal$id')
+      refute doc.catalog[:ids].has_key?('illegal$id')
     end
 
     test 'should not recognize block anchor that starts with digit' do

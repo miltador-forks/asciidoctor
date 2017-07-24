@@ -68,7 +68,7 @@ context 'Sections' do
 
     test 'synthetic ids can be disabled' do
       sec = block_from_string(":sectids!:\n\n== Section One\n")
-      assert sec.id.nil?
+      assert_nil sec.id
     end
 
     test 'explicit id in anchor above section title overrides synthetic id' do
@@ -301,7 +301,7 @@ preamble
       assert_xpath '//h1', render_string(title + "\n" + chars), 0
     end
 
-    test "document title with single-line syntax" do
+    test "document title with atx syntax" do
       assert_xpath "//h1[not(@id)][text() = 'My Title']", render_string("= My Title")
     end
 
@@ -373,7 +373,7 @@ preamble
 content
       EOS
       doc = document_from_string input
-      assert doc.blocks[0].attributes.empty?
+      assert_empty doc.blocks[0].attributes
       output = doc.convert
       assert_css 'body#idname', output, 1
       assert_css '.rolename', output, 0
@@ -385,7 +385,7 @@ content
       assert_xpath "//h2[@id='_my_section'][text() = 'My Section']", render_string("My Section\n-----------")
     end
 
-    test 'should not recognize underline containing a mix of characters' do
+    test 'should not recognize underline containing a mix of characters as setext section title' do
       input = <<-EOS
 My Section
 ----^^----
@@ -396,21 +396,32 @@ My Section
       assert_includes result, '----^^----'
     end
 
+    test 'should preprocess second line of setext section title' do
+      input = <<-EOS
+Section Title
+ifdef::asciidoctor[]
+-------------
+endif::[]
+      EOS
+      result = render_embedded_string input
+      assert_xpath '//h2', result, 1
+    end
+
     test "heading title with multiline syntax cannot begin with a dot" do
       title = ".My Title"
       chars = "-" * title.length
       assert_xpath '//h2', render_string(title + "\n" + chars), 0
     end
 
-    test "with single-line syntax" do
+    test "with atx syntax" do
       assert_xpath "//h2[@id='_my_title'][text() = 'My Title']", render_string("== My Title")
     end
 
-    test "with single-line symmetric syntax" do
+    test "with atx symmetric syntax" do
       assert_xpath "//h2[@id='_my_title'][text() = 'My Title']", render_string("== My Title ==")
     end
 
-    test "with single-line non-matching symmetric syntax" do
+    test "with atx non-matching symmetric syntax" do
       assert_xpath "//h2[@id='_my_title'][text() = 'My Title ===']", render_string("== My Title ===")
     end
 
@@ -481,7 +492,7 @@ content
       assert_xpath "//h3[@id='_my_section'][text() = 'My Section']", render_string(":fragment:\nMy Section\n~~~~~~~~~~~")
     end
 
-    test "with single line syntax" do
+    test "with atx line syntax" do
       assert_xpath "//h3[@id='_my_title'][text() = 'My Title']", render_string(":fragment:\n=== My Title")
     end
   end
@@ -491,7 +502,7 @@ content
       assert_xpath "//h4[@id='_my_section'][text() = 'My Section']", render_string(":fragment:\nMy Section\n^^^^^^^^^^")
     end
 
-    test "with single line syntax" do
+    test "with atx line syntax" do
       assert_xpath "//h4[@id='_my_title'][text() = 'My Title']", render_string(":fragment:\n==== My Title")
     end
   end
@@ -501,19 +512,19 @@ content
       assert_xpath "//h5[@id='_my_section'][text() = 'My Section']", render_string(":fragment:\nMy Section\n++++++++++")
     end
 
-    test "with single line syntax" do
+    test "with atx line syntax" do
       assert_xpath "//h5[@id='_my_title'][text() = 'My Title']", render_string(":fragment:\n===== My Title")
     end
   end
 
   context "level 5" do
-    test "with single line syntax" do
+    test "with atx line syntax" do
       assert_xpath "//h6[@id='_my_title'][text() = 'My Title']", render_string(":fragment:\n====== My Title")
     end
   end
 
   context 'Markdown-style headings' do
-    test 'single-line document title with leading marker' do
+    test 'atx document title with leading marker' do
       input = <<-EOS
 # Document Title
       EOS
@@ -521,7 +532,7 @@ content
       assert_xpath "//h1[not(@id)][text() = 'Document Title']", output, 1
     end
 
-    test 'single-line document title with symmetric markers' do
+    test 'atx document title with symmetric markers' do
       input = <<-EOS
 # Document Title #
       EOS
@@ -529,7 +540,7 @@ content
       assert_xpath "//h1[not(@id)][text() = 'Document Title']", output, 1
     end
 
-    test 'single-line section title with leading marker' do
+    test 'atx section title with leading marker' do
       input = <<-EOS
 ## Section One
 
@@ -539,7 +550,7 @@ blah blah
       assert_xpath "//h2[@id='_section_one'][text() = 'Section One']", output, 1
     end
 
-    test 'single-line section title with symmetric markers' do
+    test 'atx section title with symmetric markers' do
       input = <<-EOS
 ## Section One ##
 
@@ -549,7 +560,7 @@ blah blah
       assert_xpath "//h2[@id='_section_one'][text() = 'Section One']", output, 1
     end
 
-    test 'should not match mixed single-line syntax' do
+    test 'should not match atx syntax with mixed markers' do
       input = <<-EOS
 =#= My Title
       EOS
@@ -559,8 +570,8 @@ blah blah
     end
   end
 
-  context 'Floating Title' do
-    test 'should create floating title if style is float' do
+  context 'Discrete Heading' do
+    test 'should create discrete heading instead of section if style is float' do
       input = <<-EOS
 [float]
 = Independent Heading!
@@ -577,7 +588,7 @@ not in section
       assert_xpath '/h1/following-sibling::*[@class="paragraph"]/p[text()="not in section"]', output, 1
     end
 
-    test 'should create floating title if style is discrete' do
+    test 'should create discrete heading instead of section if style is discrete' do
       input = <<-EOS
 [discrete]
 === Independent Heading!
@@ -595,7 +606,7 @@ not in section
       assert_xpath '/h3/following-sibling::*[@class="paragraph"]/p[text()="not in section"]', output, 1
     end
 
-    test 'should generate id for floating title from converted title' do
+    test 'should generate id for discrete heading from converted title' do
       input = <<-EOS
 [discrete]
 === {sp}Heading{sp}
@@ -609,7 +620,7 @@ not in section
       assert_xpath '/h3[@class="discrete"][@id="_heading"][text()=" Heading "]', output, 1
     end
 
-    test 'should create floating title if style is float with shorthand role and id' do
+    test 'should create discrete heading if style is float with shorthand role and id' do
       input = <<-EOS
 [float.independent#first]
 = Independent Heading!
@@ -626,7 +637,7 @@ not in section
       assert_xpath '/h1/following-sibling::*[@class="paragraph"]/p[text()="not in section"]', output, 1
     end
 
-    test 'should create floating title if style is discrete with shorthand role and id' do
+    test 'should create discrete heading if style is discrete with shorthand role and id' do
       input = <<-EOS
 [discrete.independent#first]
 = Independent Heading!
@@ -643,7 +654,7 @@ not in section
       assert_xpath '/h1/following-sibling::*[@class="paragraph"]/p[text()="not in section"]', output, 1
     end
 
-    test 'floating title should be a block with context floating_title' do
+    test 'discrete heading should be a block with context floating_title' do
       input = <<-EOS
 [float]
 === Independent Heading!
@@ -652,15 +663,26 @@ not in section
       EOS
 
       doc = document_from_string input
-      floatingtitle = doc.blocks.first
-      assert floatingtitle.is_a?(Asciidoctor::Block)
-      assert floatingtitle.context != :section
-      assert_equal :floating_title, floatingtitle.context
-      assert_equal '_independent_heading', floatingtitle.id
+      heading = doc.blocks.first
+      assert heading.is_a?(Asciidoctor::Block)
+      assert_equal :floating_title, heading.context
+      assert_equal '_independent_heading', heading.id
       assert doc.catalog[:ids].has_key?('_independent_heading')
     end
 
-    test 'can assign explicit id to floating title' do
+    test 'should preprocess second line of setext discrete heading' do
+      input = <<-EOS
+[discrete]
+Heading Title
+ifdef::asciidoctor[]
+-------------
+endif::[]
+      EOS
+      result = render_embedded_string input
+      assert_xpath '//h2', result, 1
+    end
+
+    test 'can assign explicit id to discrete heading' do
       input = <<-EOS
 [[unchained]]
 [float]
@@ -670,12 +692,12 @@ not in section
       EOS
 
       doc = document_from_string input
-      floating_title = doc.blocks.first
-      assert_equal 'unchained', floating_title.id
+      heading = doc.blocks.first
+      assert_equal 'unchained', heading.id
       assert doc.catalog[:ids].has_key?('unchained')
     end
 
-    test 'should not include floating title in toc' do
+    test 'should not include discrete heading in toc' do
       input = <<-EOS
 :toc:
 
@@ -693,7 +715,7 @@ not in section
       assert_xpath %(//*[@id="toc"]//a[text()="Miss Independent"]), output, 0
     end
 
-    test 'should not set id on floating title if sectids attribute is unset' do
+    test 'should not set id on discrete heading if sectids attribute is unset' do
       input = <<-EOS
 [float]
 === Independent Heading!
@@ -707,7 +729,7 @@ not in section
       assert_xpath '/h3[@class="float"]', output, 1
     end
 
-    test 'should use explicit id for floating title if specified' do
+    test 'should use explicit id for discrete heading if specified' do
       input = <<-EOS
 [[free]]
 [float]
@@ -722,7 +744,7 @@ not in section
       assert_xpath '/h2[@class="float"]', output, 1
     end
 
-    test 'should add role to class attribute on floating title' do
+    test 'should add role to class attribute on discrete heading' do
       input = <<-EOS
 [float, role="isolated"]
 == Independent Heading!
@@ -804,7 +826,7 @@ text in standalone
         warnings = err.string
       end
 
-      assert !warnings.empty?
+      refute_empty warnings
       assert_match(/only book doctypes can contain level 0 sections/, warnings)
     end
 
@@ -841,7 +863,7 @@ Master section text.
         warnings = err.string
       end
 
-      assert warnings.empty?
+      assert_empty warnings
       assert_match(/Master document written by Doc Writer/, output)
       assert_match(/Standalone document written by Junior Writer/, output)
       assert_xpath '//*[@class="sect1"]/h2[text() = "Standalone Document"]', output, 1
@@ -849,7 +871,7 @@ Master section text.
       assert_xpath '//*[@class="sect1"]/h2[text() = "Section in Master"]', output, 1
     end
 
-    test 'level offset should be added to floating title' do
+    test 'level offset should be added to discrete heading' do
       input = <<-EOS
 = Master Document
 Doc Writer
@@ -857,11 +879,11 @@ Doc Writer
 :leveloffset: 1
 
 [float]
-= Floating Title
+= Discrete Heading
       EOS
 
       output = render_string input
-      assert_xpath '//h2[@class="float"][text() = "Floating Title"]', output, 1
+      assert_xpath '//h2[@class="float"][text() = "Discrete Heading"]', output, 1
     end
 
     test 'should be able to reset level offset' do
@@ -2746,7 +2768,7 @@ intro
       end
 
       refute_nil warnings
-      assert !warnings.empty?
+      refute_empty warnings
       assert_match(/ERROR:.*section/, warnings)
     end
 
@@ -2833,7 +2855,7 @@ Appendix subsection content
         output = render_string input, :backend => 'docbook'
         warnings = err.string
       end
-      assert warnings.empty?
+      assert_empty warnings
       assert_xpath '/book/preface', output, 1
       assert_xpath '/book/preface/section', output, 1
       assert_xpath '/book/part', output, 1

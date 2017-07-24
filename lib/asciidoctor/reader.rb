@@ -64,7 +64,6 @@ class Reader
     end
     @lines = data ? (prepare_lines data, opts) : []
     @source_lines = @lines.dup
-    @eof = @lines.empty?
     @look_ahead = 0
     @process_lines = true
     @unescape_next_line = false
@@ -121,8 +120,26 @@ class Reader
   #
   # Returns True if there are more lines, False if there are not.
   def has_more_lines?
-    !(@eof || (@eof = peek_line.nil?))
+    if @lines.empty?
+      @look_ahead = 0
+      false
+    else
+      true
+    end
   end
+
+  # Public: Check whether this reader is empty (contains no lines)
+  #
+  # Returns true if there are no more lines to peek, otherwise false.
+  def empty?
+    if @lines.empty?
+      @look_ahead = 0
+      true
+    else
+      false
+    end
+  end
+  alias eof? empty?
 
   # Public: Peek at the next line and check if it's empty (i.e., whitespace only)
   #
@@ -154,19 +171,14 @@ class Reader
   def peek_line direct = false
     if direct || @look_ahead > 0
       @unescape_next_line ? @lines[0][1..-1] : @lines[0]
-    elsif @eof || @lines.empty?
-      @eof = true
+    elsif @lines.empty?
       @look_ahead = 0
       nil
     else
       # FIXME the problem with this approach is that we aren't
       # retaining the modified line (hence the @unescape_next_line tweak)
-      # perhaps we need a stack of proxy lines
-      if !(line = process_line @lines[0])
-        peek_line
-      else
-        line
-      end
+      # perhaps we need a stack of proxied lines
+      (line = process_line @lines[0]) ? line : peek_line
     end
   end
 
@@ -183,11 +195,11 @@ class Reader
   #
   # Returns A String Array of the next multiple lines of source data, or an empty Array
   # if there are no more lines in this Reader.
-  def peek_lines num = 1, direct = true
+  def peek_lines num, direct = false
     old_look_ahead = @look_ahead
     result = []
     num.times do
-      if (line = read_line direct)
+      if (line = direct ? shift : read_line)
         result << line
       else
         @lineno -= 1 if direct
@@ -205,17 +217,11 @@ class Reader
 
   # Public: Get the next line of source data. Consumes the line returned.
   #
-  # direct  - A Boolean flag to bypasses the check for more lines and immediately
-  #           returns the first element of the internal @lines Array. (default: false)
-  #
   # Returns the String of the next line of the source data if data is present.
   # Returns nothing if there is no more data.
-  def read_line direct = false
-    if direct || @look_ahead > 0 || has_more_lines?
-      shift
-    else
-      nil
-    end
+  def read_line
+    # has_more_lines? triggers preprocessor
+    shift if @look_ahead > 0 || has_more_lines?
   end
 
   # Public: Get the remaining lines of source data.
@@ -228,6 +234,7 @@ class Reader
   # Returns the lines read as a String Array
   def read_lines
     lines = []
+    # has_more_lines? triggers preprocessor
     while has_more_lines?
       lines << shift
     end
@@ -246,12 +253,9 @@ class Reader
 
   # Public: Advance to the next line by discarding the line at the front of the stack
   #
-  # direct  - A Boolean flag to bypasses the check for more lines and immediately
-  #           returns the first element of the internal @lines Array. (default: true)
-  #
   # Returns a Boolean indicating whether there was a line to discard.
-  def advance direct = true
-    !!read_line(direct)
+  def advance
+    shift ? true : false
   end
 
   # Public: Push the String line onto the beginning of the Array of source data.
@@ -294,42 +298,39 @@ class Reader
   #
   # Returns nothing.
   def replace_next_line replacement
-    advance
+    shift
     unshift replacement
     nil
   end
   # deprecated
   alias replace_line replace_next_line
 
-  # Public: Strip off leading blank lines in the Array of lines.
+  # Public: Skip blank lines at the cursor.
   #
   # Examples
   #
-  #   @lines
+  #   reader.lines
   #   => ["", "", "Foo", "Bar", ""]
-  #
-  #   skip_blank_lines
+  #   reader.skip_blank_lines
   #   => 2
-  #
-  #   @lines
+  #   reader.lines
   #   => ["Foo", "Bar", ""]
   #
-  # Returns an Integer of the number of lines skipped
+  # Returns the [Integer] number of lines skipped or nothing if all lines have
+  # been consumed (even if lines were skipped by this method).
   def skip_blank_lines
-    return 0 if eof?
+    return if empty?
 
     num_skipped = 0
     # optimized code for shortest execution path
     while (next_line = peek_line)
       if next_line.empty?
-        advance
+        shift
         num_skipped += 1
       else
         return num_skipped
       end
     end
-
-    num_skipped
   end
 
   # Public: Skip consecutive lines containing line comments and return them.
@@ -345,19 +346,22 @@ class Reader
   #   => ["bar"]
   #
   # Returns the Array of lines that were skipped
-  def skip_comment_lines opts = {}
-    return [] if eof?
+  def skip_comment_lines
+    return [] if empty?
 
     comment_lines = []
-    include_blank_lines = opts[:include_blank_lines]
-    while (next_line = peek_line)
-      if include_blank_lines && next_line.empty?
-        comment_lines << shift
-      elsif (commentish = next_line.start_with?('//')) && (CommentBlockRx.match? next_line)
-        comment_lines << shift
-        comment_lines.push(*(read_lines_until(:terminator => next_line, :read_last_line => true, :skip_processing => true)))
-      elsif commentish && (CommentLineRx.match? next_line)
-        comment_lines << shift
+    while (next_line = peek_line) && !next_line.empty?
+      if next_line.start_with? '//'
+        if next_line.start_with? '///'
+          if (ll = next_line.length) > 3 && next_line == '/' * ll
+            comment_lines << shift
+            comment_lines.push(*(read_lines_until(:terminator => next_line, :read_last_line => true, :skip_processing => true)))
+          else
+            break
+          end
+        else
+          comment_lines << shift
+        end
       else
         break
       end
@@ -367,13 +371,15 @@ class Reader
   end
 
   # Public: Skip consecutive lines that are line comments and return them.
+  #
+  # This method assumes the reader only contains simple lines (no blocks).
   def skip_line_comments
-    return [] if eof?
+    return [] if empty?
 
     comment_lines = []
     # optimized code for shortest execution path
-    while (next_line = peek_line)
-      if CommentLineRx.match? next_line
+    while (next_line = peek_line) && !next_line.empty?
+      if (next_line.start_with? '//')
         comment_lines << shift
       else
         break
@@ -389,18 +395,9 @@ class Reader
   def terminate
     @lineno += @lines.size
     @lines.clear
-    @eof = true
     @look_ahead = 0
     nil
   end
-
-  # Public: Check whether this reader is empty (contains no lines)
-  #
-  # Returns true if there are no more lines to peek, otherwise false.
-  def eof?
-    !has_more_lines?
-  end
-  alias empty? eof?
 
   # Public: Return all the lines from `@lines` until we (1) run out them,
   #   (2) find a blank line with :break_on_blank_lines => true, or (3) find
@@ -434,7 +431,7 @@ class Reader
   #   => ["First line", "Second line"]
   def read_lines_until options = {}
     result = []
-    advance if options[:skip_first_line]
+    shift if options[:skip_first_line]
     if @process_lines && options[:skip_processing]
       @process_lines = false
       restore_process_lines = true
@@ -477,7 +474,7 @@ class Reader
           line_restored = true
         end
       else
-        unless skip_comments && (line.start_with? '//') && (CommentLineRx.match? line)
+        unless skip_comments && (line.start_with? '//') && !(line.start_with? '///')
           result << line
           line_read = true
         end
@@ -495,6 +492,7 @@ class Reader
   #
   # This method can be used directly when you've already called peek_line
   # and determined that you do, in fact, want to pluck that line off the stack.
+  # Use read_line if the line hasn't (or many not have been) visited yet.
   #
   # Returns The String line at the top of the stack
   def shift
@@ -507,7 +505,6 @@ class Reader
   def unshift line
     @lineno -= 1
     @look_ahead += 1
-    @eof = false
     @lines.unshift line
   end
 
@@ -515,7 +512,6 @@ class Reader
   def unshift_all lines
     @lineno -= lines.size
     @look_ahead += lines.size
-    @eof = false
     @lines.unshift(*lines)
   end
 
@@ -609,7 +605,7 @@ class PreprocessorReader < Reader
 
     if line.empty?
       @look_ahead += 1
-      return ''
+      return line
     end
 
     # NOTE highly optimized
@@ -622,7 +618,7 @@ class PreprocessorReader < Reader
           line[1..-1]
         elsif preprocess_conditional_directive $2, $3, $4, $5
           # move the pointer past the conditional line
-          advance
+          shift
           # treat next line as uncharted territory
           nil
         else
@@ -632,7 +628,7 @@ class PreprocessorReader < Reader
           line
         end
       elsif @skipping
-        advance
+        shift
         nil
       elsif (line.start_with? 'inc', '\\inc') && IncludeDirectiveRx =~ line
         # if escaped, mark as processed and return line unescaped
@@ -656,7 +652,7 @@ class PreprocessorReader < Reader
         line
       end
     elsif @skipping
-      advance
+      shift
       nil
     else
       # NOTE optimization to inline super
@@ -664,6 +660,17 @@ class PreprocessorReader < Reader
       line
     end
   end
+
+  # (see Reader#has_more_lines?)
+  def has_more_lines?
+    peek_line ? true : false
+  end
+
+  # (see Reader#empty?)
+  def empty?
+    peek_line ? false : true
+  end
+  alias eof? empty?
 
   # Public: Override the Reader#peek_line method to pop the include
   # stack if the last line has been reached and there's at least
@@ -814,15 +821,15 @@ class PreprocessorReader < Reader
   #
   # Returns a Boolean indicating whether the line under the cursor has changed.
   def preprocess_include_directive raw_target, raw_attributes
-    if ((target = raw_target).include? '{') &&
+    if ((target = raw_target).include? ATTR_REF_HEAD) &&
         (target = @document.sub_attributes raw_target, :attribute_missing => 'drop-line').empty?
-      advance
+      shift
       if @document.attributes.fetch('attribute-missing', Compliance.attribute_missing) == 'skip'
         unshift %(Unresolved directive in #{@path} - include::#{raw_target}[#{raw_attributes}])
       end
       true
     elsif include_processors? && (ext = @include_processor_extensions.find {|candidate| candidate.instance.handles? target })
-      advance
+      shift
       # FIXME parse attributes only if requested by extension
       ext.process_method[@document, self, target, AttributeList.new(raw_attributes).parse]
       true
@@ -867,9 +874,9 @@ class PreprocessorReader < Reader
           replace_next_line %(Unresolved directive in #{@path} - include::#{target}[#{raw_attributes}])
           return true
         end
-        # NOTE relpath is the path relative to the outermost document (or base_dir, if set)
-        #relpath = @document.relative_path inc_path
-        relpath = PathResolver.new.relative_path inc_path, @document.base_dir
+        # NOTE relpath is the path relative to the root document (or base_dir, if set)
+        # QUESTION should we move relative_path method to Document
+        relpath = (@path_resolver ||= PathResolver.new).relative_path inc_path, @document.base_dir
       end
 
       inc_linenos, inc_tags, attributes = nil, nil, {}
@@ -940,7 +947,7 @@ class PreprocessorReader < Reader
           replace_next_line %(Unresolved directive in #{@path} - include::#{target}[#{raw_attributes}])
           return true
         end
-        advance
+        shift
         # FIXME not accounting for skipped lines in reader line numbering
         push_include inc_lines, inc_path, relpath, inc_offset, attributes if inc_offset
       elsif inc_tags
@@ -1003,14 +1010,14 @@ class PreprocessorReader < Reader
         unless (missing_tags = inc_tags.keys.to_a - tags_used.to_a).empty?
           warn %(asciidoctor: WARNING: #{line_info}: tag#{missing_tags.size > 1 ? 's' : nil} '#{missing_tags * ','}' not found in include #{target_type}: #{inc_path})
         end
-        advance
+        shift
         # FIXME not accounting for skipped lines in reader line numbering
         push_include inc_lines, inc_path, relpath, inc_offset, attributes if inc_offset
       else
         begin
           # NOTE read content first so that we only advance cursor if IO operation succeeds
           inc_content = target_type == :file ? (::IO.read inc_path) : open(inc_path, 'r') {|f| f.read }
-          advance
+          shift
           push_include inc_content, inc_path, relpath, 1, attributes
         rescue
           warn %(asciidoctor: WARNING: #{line_info}: include #{target_type} not readable: #{inc_path})
@@ -1053,8 +1060,7 @@ class PreprocessorReader < Reader
     end
 
     if path
-      @includes << Helpers.rootname(path)
-      @path = path
+      @includes << Helpers.rootname(@path = path)
     else
       @path = '<stdin>'
     end
@@ -1088,7 +1094,6 @@ class PreprocessorReader < Reader
       # FIXME kind of a hack
       #Document::AttributeEntry.new('infile', @file).save_to_next_block @document
       #Document::AttributeEntry.new('indir', @dir).save_to_next_block @document
-      @eof = false
       @look_ahead = 0
     end
     self
@@ -1100,10 +1105,9 @@ class PreprocessorReader < Reader
       # FIXME kind of a hack
       #Document::AttributeEntry.new('infile', @file).save_to_next_block @document
       #Document::AttributeEntry.new('indir', ::File.dirname(@file)).save_to_next_block @document
-      @eof = @lines.empty?
       @look_ahead = 0
+      nil
     end
-    nil
   end
 
   def include_depth
@@ -1197,7 +1201,7 @@ class PreprocessorReader < Reader
 
     # QUESTION should we substitute first?
     # QUESTION should we also require string to be single quoted (like block attribute values?)
-    val = @document.sub_attributes val, :attribute_missing => 'drop' if val.include? '{'
+    val = @document.sub_attributes val, :attribute_missing => 'drop' if val.include? ATTR_REF_HEAD
 
     if quoted
       val

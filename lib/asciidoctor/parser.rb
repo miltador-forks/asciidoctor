@@ -133,12 +133,12 @@ class Parser
     # if the first line is the document title, add a header to the document and parse the header metadata
     if implicit_doctitle
       source_location = reader.cursor if document.sourcemap
-      document.id, _, doctitle, _, single_line = parse_section_title reader, document
+      document.id, _, doctitle, _, atx = parse_section_title reader, document
       unless assigned_doctitle
         document.title = assigned_doctitle = doctitle
       end
       # default to compat-mode if document uses atx-style doctitle
-      document.set_attr 'compat-mode' unless single_line || (document.attribute_locked? 'compat-mode')
+      document.set_attr 'compat-mode' unless atx || (document.attribute_locked? 'compat-mode')
       if (separator = block_attributes.delete 'separator')
         document.set_attr 'title-separator', separator unless document.attribute_locked? 'title-separator'
       end
@@ -371,7 +371,7 @@ class Parser
         end
       end
 
-      reader.skip_blank_lines
+      reader.skip_blank_lines || break
     end
 
     if part
@@ -425,11 +425,8 @@ class Parser
   # Returns a Block object built from the parsed content of the processed
   # lines, or nothing if no block is found.
   def self.next_block(reader, parent, attributes = {}, options = {})
-    # Skip ahead to the block content
-    skipped = reader.skip_blank_lines
-
-    # bail if we've reached the end of the parent block or document
-    return unless reader.has_more_lines?
+    # skip ahead to the block content; bail if we've reached the end of the reader
+    return unless (skipped = reader.skip_blank_lines)
 
     # check for option to find list item text only
     # if skipped a line, assume a list continuation was
@@ -444,12 +441,10 @@ class Parser
     if options.fetch :parse_metadata, true
       # read lines until there are no more metadata lines to read
       while parse_block_metadata_line reader, document, attributes, options
-        advanced = reader.advance
-      end
-      if advanced && !reader.has_more_lines?
-        # NOTE there are no cases when these attributes are used, but clear them anyway
-        attributes.clear
-        return
+        # discard the line just processed
+        reader.shift
+        # QUESTION should we clear the attributes? no known cases when it's necessary
+        reader.skip_blank_lines || return
       end
     end
 
@@ -515,7 +510,7 @@ class Parser
         else
           indented, ch0 = false, this_line.chr
           layout_break_chars = md_syntax ? HYBRID_LAYOUT_BREAK_CHARS : LAYOUT_BREAK_CHARS
-          if (layout_break_chars.key? ch0) && (md_syntax ? (HybridLayoutBreakRx.match? this_line) :
+          if (layout_break_chars.key? ch0) && (md_syntax ? (ExtLayoutBreakRx.match? this_line) :
               (this_line == ch0 * (ll = this_line.length) && ll > 2))
             # NOTE we're letting break lines (horizontal rule, page_break, etc) have attributes
             block = Block.new(parent, layout_break_chars[ch0], :content_model => :empty)
@@ -537,7 +532,7 @@ class Parser
               block.parse_attributes(match[3], posattrs, :sub_input => true, :sub_result => false, :into => attributes)
               # style doesn't have special meaning for media macros
               attributes.delete 'style' if attributes.key? 'style'
-              if (target.include? '{') && (target = block.sub_attributes target, :attribute_missing => 'drop-line').empty?
+              if (target.include? ATTR_REF_HEAD) && (target = block.sub_attributes target, :attribute_missing => 'drop-line').empty?
                 # retain as unparsed if attribute-missing is skip
                 if document.attributes.fetch('attribute-missing', Compliance.attribute_missing) == 'skip'
                   return Block.new(parent, :paragraph, :content_model => :simple, :source => [this_line])
@@ -594,7 +589,7 @@ class Parser
       end
 
       # haven't found anything yet, continue
-      if !indented && CALLOUT_LIST_LEADERS.include?(ch0 ||= this_line.chr) &&
+      if !indented && CALLOUT_LIST_HEADS.include?(ch0 ||= this_line.chr) &&
           (CalloutListSniffRx.match? this_line) && (match = CalloutListRx.match this_line)
         block = List.new(parent, :colist)
         attributes['style'] = 'arabic'
@@ -654,7 +649,7 @@ class Parser
         break
 
       elsif (style == 'float' || style == 'discrete') && (Compliance.underline_style_section_titles ?
-          (is_section_title? this_line, (reader.peek_line true)) : !indented && (is_section_title? this_line))
+          (is_section_title? this_line, reader.peek_line) : !indented && (atx_section_title? this_line))
         reader.unshift_line this_line
         float_id, float_reftext, float_title, float_level, _ = parse_section_title(reader, document)
         attributes['reftext'] = float_reftext if float_reftext
@@ -711,16 +706,8 @@ class Parser
 
       # a normal paragraph: contiguous non-blank/non-continuation lines (left-indented or normal style)
       else
+        # NOTE we only get here if there's at least one line that's not a line comment
         lines = read_paragraph_lines reader, break_at_list, :skip_line_comments => true
-
-        # NOTE we need this logic because we've asked the reader to skip
-        # line comments, which may leave us w/ an empty buffer if those
-        # were the only lines found
-        if in_list && lines.empty?
-          # call advance since the reader preserved the last line
-          reader.advance
-          return
-        end
 
         # NOTE don't check indented here since it's extremely rare
         #if text_only || indented
@@ -729,7 +716,7 @@ class Parser
           # QUESTION do we even need to shift since whitespace is normalized by XML in this case?
           adjust_indentation! lines if indented && style == 'normal'
           block = Block.new(parent, :paragraph, :content_model => :simple, :source => lines, :attributes => attributes)
-        elsif (ADMONITION_STYLE_LEADERS.include? ch0) && (this_line.include? ':') && (AdmonitionParagraphRx =~ this_line)
+        elsif (ADMONITION_STYLE_HEADS.include? ch0) && (this_line.include? ':') && (AdmonitionParagraphRx =~ this_line)
           lines[0] = $' # string after match
           attributes['name'] = admonition_name = (attributes['style'] = $1).downcase
           attributes['textlabel'] = (attributes.delete 'caption') || document.attributes[%(#{admonition_name}-caption)]
@@ -743,8 +730,8 @@ class Parser
             lines.pop while lines[-1].empty?
           end
           attributes['style'] = 'quote'
-          # NOTE will only detect headings that are floating titles (not section titles)
-          # TODO could assume a floating title when inside a block context
+          # NOTE will only detect discrete (aka free-floating) headings
+          # TODO could assume a discrete heading when inside a block context
           # FIXME Reader needs to be created w/ line info
           block = build_block(:quote, :compound, false, parent, Reader.new(lines), attributes)
         elsif ch0 == '"' && lines.size > 1 && (lines[-1].start_with? '-- ') && (lines[-2].end_with? '"')
@@ -783,6 +770,7 @@ class Parser
 
       when :comment
         build_block(block_context, :skip, terminator, parent, reader, attributes)
+        attributes.clear
         return
 
       when :example
@@ -879,7 +867,7 @@ class Parser
             attributes['cloaked-context'] = cloaked_context
           end
           block = build_block block_context, content_model, terminator, parent, reader, attributes, :extension => extension
-          unless block && content_model != :skip
+          unless block
             attributes.clear
             return
           end
@@ -938,7 +926,7 @@ class Parser
   # returns the match data if this line is the first line of a delimited block or nil if not
   def self.is_delimited_block? line, return_match_data = false
     # highly optimized for best performance
-    return unless (line_len = line.length) > 1 && DELIMITED_BLOCK_LEADERS.include?(line.slice 0, 2)
+    return unless (line_len = line.length) > 1 && DELIMITED_BLOCK_HEADS.include?(line.slice 0, 2)
     # catches open block
     if line_len == 2
       tip = line
@@ -1009,14 +997,11 @@ class Parser
   # NOTE could invoke filter in here, before and after parsing
   def self.build_block(block_context, content_model, terminator, parent, reader, attributes, options = {})
     if content_model == :skip
-      skip_processing = true
-      parse_as_content_model = :simple
+      skip_processing, parse_as_content_model = true, :simple
     elsif content_model == :raw
-      skip_processing = false
-      parse_as_content_model = :simple
+      skip_processing, parse_as_content_model = false, :simple
     else
-      skip_processing = false
-      parse_as_content_model = content_model
+      skip_processing, parse_as_content_model = false, content_model
     end
 
     if terminator.nil?
@@ -1041,18 +1026,15 @@ class Parser
       block_reader = Reader.new reader.read_lines_until(:terminator => terminator, :skip_processing => skip_processing), reader.cursor
     end
 
-    if content_model == :skip
-      attributes.clear
-      # FIXME we shouldn't be mixing return types
-      return lines
-    end
-
     if content_model == :verbatim
       if (indent = attributes['indent'])
         adjust_indentation! lines, indent, (attributes['tabsize'] || parent.document.attributes['tabsize'])
       elsif (tab_size = (attributes['tabsize'] || parent.document.attributes['tabsize']).to_i) > 0
         adjust_indentation! lines, nil, tab_size
       end
+    elsif content_model == :skip
+      # QUESTION should we still invoke process method if extension is specified?
+      return
     end
 
     if (extension = options[:extension])
@@ -1068,7 +1050,6 @@ class Parser
           block_reader = Reader.new lines
         end
       else
-        # FIXME need a test to verify this returns nil at the right time
         return
       end
     else
@@ -1100,8 +1081,7 @@ class Parser
   #
   # Returns nothing.
   def self.parse_blocks(reader, parent)
-    while (block = next_block reader, parent)
-      parent << block
+    while ((block = next_block reader, parent) && parent << block) || reader.has_more_lines?
     end
   end
 
@@ -1155,7 +1135,7 @@ class Parser
       list_block << list_item if list_item
       list_item = nil
 
-      reader.skip_blank_lines
+      reader.skip_blank_lines || break
     end
 
     list_block
@@ -1190,13 +1170,13 @@ class Parser
     text.scan(InlineAnchorScanRx) do
       if (id = $1)
         if (reftext = $2)
-          next if (reftext.include? '{') && (reftext = document.sub_attributes reftext).empty?
+          next if (reftext.include? ATTR_REF_HEAD) && (reftext = document.sub_attributes reftext).empty?
         end
       else
         id = $3
         if (reftext = $4)
           reftext = reftext.gsub '\]', ']' if reftext.include? ']'
-          next if (reftext.include? '{') && (reftext = document.sub_attributes reftext).empty?
+          next if (reftext.include? ATTR_REF_HEAD) && (reftext = document.sub_attributes reftext).empty?
         end
       end
       unless document.register :refs, [id, (Inline.new block, :anchor, reftext, :type => :ref, :id => id), reftext]
@@ -1306,7 +1286,7 @@ class Parser
     end
 
     # first skip the line with the marker / term
-    reader.advance
+    reader.shift
     list_item_reader = Reader.new read_lines_for_list_item(reader, list_type, sibling_trait, has_text), reader.cursor
     if list_item_reader.has_more_lines?
       # NOTE peek on the other side of any comment lines
@@ -1329,13 +1309,10 @@ class Parser
       # only relevant for :dlist
       options = {:text => !has_text}
 
-      # we can look for blocks until there are no more lines (and not worry
-      # about sections) since the reader is confined within the boundaries of a
-      # list
-      while list_item_reader.has_more_lines?
-        if (new_block = next_block(list_item_reader, list_item, {}, options))
-          list_item << new_block
-        end
+      # we can look for blocks until lines are exhausted without worrying about
+      # sections since reader is confined to boundaries of list
+      while ((block = next_block list_item_reader, list_item, {}, options) && list_item << block) ||
+          list_item_reader.has_more_lines?
       end
 
       list_item.fold_first(continuation_connects_first_block, content_adjacent)
@@ -1463,10 +1440,10 @@ class Parser
         elsif prev_line && prev_line.empty?
           # advance to the next line of content
           if this_line.empty?
-            reader.skip_blank_lines
-            this_line = reader.read_line
-            # stop reading if we hit eof or a sibling list item
-            break unless this_line && !is_sibling_list_item?(this_line, list_type, sibling_trait)
+            # stop reading if we reach eof
+            break unless (this_line = reader.skip_blank_lines && reader.read_line)
+            # stop reading if we hit a sibling list item
+            break if is_sibling_list_item? this_line, list_type, sibling_trait
           end
 
           if this_line == LIST_CONTINUATION
@@ -1554,7 +1531,7 @@ class Parser
   def self.initialize_section reader, parent, attributes = {}
     document = parent.document
     source_location = reader.cursor if document.sourcemap
-    sect_id, sect_reftext, sect_title, sect_level, single_line = parse_section_title reader, document
+    sect_id, sect_reftext, sect_title, sect_level, atx = parse_section_title reader, document
     if sect_reftext
       attributes['reftext'] = sect_reftext
     elsif attributes.key? 'reftext'
@@ -1602,7 +1579,7 @@ class Parser
     if (id = section.id ||= (attributes['id'] ||
         ((document.attributes.key? 'sectids') ? (Section.generate_id section.title, document) : nil)))
       unless document.register :refs, [id, section, sect_reftext || section.title]
-        warn %(asciidoctor: WARNING: #{reader.path}: line #{reader.lineno - (single_line ? 1 : 2)}: id assigned to section already in use: #{id})
+        warn %(asciidoctor: WARNING: #{reader.path}: line #{reader.lineno - (atx ? 1 : 2)}: id assigned to section already in use: #{id})
       end
     end
 
@@ -1619,10 +1596,12 @@ class Parser
   #
   # Returns the Integer section level if the Reader is positioned at a section title or nil otherwise
   def self.is_next_line_section?(reader, attributes)
-    if attributes.key?(1) && (attr1 = attributes[1] || '').start_with?('float', 'discrete') && FloatingTitleStyleRx.match?(attr1)
+    if (style = attributes[1]) && (style.start_with? 'discrete', 'float') && (DiscreteHeadingStyleRx.match? style)
       return
     elsif reader.has_more_lines?
-      Compliance.underline_style_section_titles ? is_section_title?(*reader.peek_lines(2)) : is_section_title?(reader.peek_line)
+      Compliance.underline_style_section_titles ?
+          is_section_title?(*reader.peek_lines(2, style && style == 'comment')) :
+          atx_section_title?(reader.peek_line)
     end
   end
 
@@ -1641,25 +1620,37 @@ class Parser
     end
   end
 
-  # Public: Checks if these lines are a section title
+  # Public: Checks whether the lines given are an atx or setext section title.
   #
-  # line1 - the first line as a String
-  # line2 - the second line as a String (default: nil)
+  # line1 - [String] candidate title.
+  # line2 - [String] candidate underline (default: nil).
   #
-  # Returns the Integer section level if these lines are a section title or nil otherwise
+  # Returns the [Integer] section level if these lines are a section title, otherwise nothing.
   def self.is_section_title?(line1, line2 = nil)
-    is_single_line_section_title?(line1) || (line2.nil_or_empty? ? nil : is_two_line_section_title?(line1, line2))
+    atx_section_title?(line1) || (line2.nil_or_empty? ? nil : setext_section_title?(line1, line2))
   end
 
-  def self.is_single_line_section_title?(line1)
-    if (line1.start_with?('=') || (Compliance.markdown_syntax && line1.start_with?('#'))) && AtxSectionRx =~ line1
-    #if line1.start_with?('=', '#') && AtxSectionRx =~ line1 && (line1.start_with?('=') || Compliance.markdown_syntax)
-      # NOTE level is 1 less than number of line markers
+  # Checks whether the line given is an atx section title.
+  #
+  # The level returned is 1 less than number of leading markers.
+  #
+  # line - [String] candidate title with leading atx marker.
+  #
+  # Returns the [Integer] section level if this line is an atx section title, otherwise nothing.
+  def self.atx_section_title? line
+    if Compliance.markdown_syntax ? ((line.start_with? '=', '#') && ExtAtxSectionTitleRx =~ line) :
+        ((line.start_with? '=') && AtxSectionTitleRx =~ line)
       $1.length - 1
     end
   end
 
-  def self.is_two_line_section_title?(line1, line2)
+  # Checks whether the lines given are an setext section title.
+  #
+  # line1 - [String] candidate title
+  # line2 - [String] candidate underline
+  #
+  # Returns the [Integer] section level if these lines are an setext section title, otherwise nothing.
+  def self.setext_section_title? line1, line2
     if (level = SETEXT_SECTION_LEVELS[line2_ch1 = line2.chr]) &&
         line2_ch1 * (line2_len = line2.length) == line2 && SetextSectionTitleRx.match?(line1) &&
         (line_length(line1) - line2_len).abs < 2
@@ -1669,18 +1660,20 @@ class Parser
 
   # Internal: Parse the section title from the current position of the reader
   #
-  # Parse a single or double-line section title. After this method is called,
+  # Parse an atx (single-line) or setext (underlined) section title. After this method is called,
   # the Reader will be positioned at the line after the section title.
   #
-  # reader  - the source reader, positioned at a section title
-  # document- the current document
+  # For efficiency, we don't reuse methods internally that check for a section title.
+  #
+  # reader   - the source [Reader], positioned at a section title.
+  # document - the current [Document].
   #
   # Examples
   #
   #   reader.lines
   #   # => ["Foo", "~~~"]
   #
-  #   id, reftext, title, level, single = parse_section_title(reader, document)
+  #   id, reftext, title, level, atx = parse_section_title(reader, document)
   #
   #   title
   #   # => "Foo"
@@ -1688,13 +1681,13 @@ class Parser
   #   # => 2
   #   id
   #   # => nil
-  #   single
+  #   atx
   #   # => false
   #
   #   line1
   #   # => "==== Foo"
   #
-  #   id, reftext, title, level, single = parse_section_title(reader, document)
+  #   id, reftext, title, level, atx = parse_section_title(reader, document)
   #
   #   title
   #   # => "Foo"
@@ -1702,22 +1695,20 @@ class Parser
   #   # => 3
   #   id
   #   # => nil
-  #   single
+  #   atx
   #   # => true
   #
-  # returns an Array of [String, String, Integer, String, Boolean], representing the
-  # id, reftext, title, level and line count of the Section, or nil.
-  #
-  #--
-  # NOTE for efficiency, we don't reuse methods that check for a section title
+  # Returns an 5-element [Array] containing the id (String), reftext (String),
+  # title (String), level (Integer), and flag (Boolean) indicating whether an
+  # atx section title was matched, or nothing.
   def self.parse_section_title(reader, document)
     sect_id = sect_reftext = nil
     line1 = reader.read_line
 
-    #if line1.start_with?('=', '#') && AtxSectionRx =~ line1 && (line1.start_with?('=') || Compliance.markdown_syntax)
-    if (line1.start_with?('=') || (Compliance.markdown_syntax && line1.start_with?('#'))) && AtxSectionRx =~ line1
+    if Compliance.markdown_syntax ? ((line1.start_with? '=', '#') && ExtAtxSectionTitleRx =~ line1) :
+        ((line1.start_with? '=') && AtxSectionTitleRx =~ line1)
       # NOTE level is 1 less than number of line markers
-      sect_level, sect_title, single_line = $1.length - 1, $2, true
+      sect_level, sect_title, atx = $1.length - 1, $2, true
       if sect_title.end_with?(']]') && InlineSectionAnchorRx =~ sect_title && !$1 # escaped
         sect_title, sect_id, sect_reftext = (sect_title.slice 0, sect_title.length - $&.length), $2, $3
       end
@@ -1725,16 +1716,16 @@ class Parser
         (sect_level = SETEXT_SECTION_LEVELS[line2_ch1 = line2.chr]) &&
         line2_ch1 * (line2_len = line2.length) == line2 && (sect_title = SetextSectionTitleRx =~ line1 && $1) &&
         (line_length(line1) - line2_len).abs < 2
-      single_line = false
+      atx = false
       if sect_title.end_with?(']]') && InlineSectionAnchorRx =~ sect_title && !$1 # escaped
         sect_title, sect_id, sect_reftext = (sect_title.slice 0, sect_title.length - $&.length), $2, $3
       end
-      reader.advance
+      reader.shift
     else
       raise %(Unrecognized section at #{reader.prev_line_info})
     end
     sect_level += document.attr('leveloffset').to_i if document.attr?('leveloffset')
-    [sect_id, sect_reftext, sect_title, sect_level, single_line]
+    [sect_id, sect_reftext, sect_title, sect_level, atx]
   end
 
   # Public: Calculate the number of unicode characters in the line, excluding the endline
@@ -1981,8 +1972,8 @@ class Parser
   def self.parse_block_metadata_lines reader, document, attributes = {}, options = {}
     while parse_block_metadata_line reader, document, attributes, options
       # discard the line just processed
-      reader.advance
-      reader.skip_blank_lines
+      reader.shift
+      reader.skip_blank_lines || break
     end
     attributes
   end
@@ -2016,7 +2007,7 @@ class Parser
             # NOTE registration of id and reftext is deferred until block is processed
             attributes['id'] = $1
             if (reftext = $2)
-              attributes['reftext'] = (reftext.include? '{') ? (document.sub_attributes reftext) : reftext
+              attributes['reftext'] = (reftext.include? ATTR_REF_HEAD) ? (document.sub_attributes reftext) : reftext
             end
             return true
           end
@@ -2054,7 +2045,7 @@ class Parser
     reader.skip_comment_lines
     while process_attribute_entry reader, document, attributes
       # discard line just processed
-      reader.advance
+      reader.shift
       reader.skip_comment_lines
     end
   end
@@ -2266,11 +2257,11 @@ class Parser
       explicit_colspecs = true
     end
 
-    skipped = table_reader.skip_blank_lines
-
+    skipped = table_reader.skip_blank_lines || 0
     parser_ctx = Table::ParserContext.new table_reader, table, attributes
     format, loop_idx, implicit_header_boundary = parser_ctx.format, -1, nil
     implicit_header = true unless skipped > 0 || (attributes.key? 'header-option') || (attributes.key? 'noheader-option')
+
     while (line = table_reader.read_line)
       if (loop_idx += 1) > 0 && line.empty?
         line = nil
@@ -2361,11 +2352,11 @@ class Parser
         end
       end
 
-      table_reader.skip_blank_lines unless parser_ctx.cell_open?
-
-      unless table_reader.has_more_lines?
-        # NOTE may have already closed cell in csv or dsv table (see previous call to parser_ctx.close_cell(true))
-        parser_ctx.close_cell true if parser_ctx.cell_open?
+      # NOTE cell may already be closed if table format is csv or dsv
+      if parser_ctx.cell_open?
+        parser_ctx.close_cell true unless table_reader.has_more_lines?
+      else
+        table_reader.skip_blank_lines || break
       end
     end
 

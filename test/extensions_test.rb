@@ -228,11 +228,22 @@ context 'Extensions' do
 
     test 'should register extension block' do
       begin
-        Asciidoctor::Extensions.register(:sample) do
+        Asciidoctor::Extensions.register :sample do
         end
         refute_nil Asciidoctor::Extensions.groups
         assert_equal 1, Asciidoctor::Extensions.groups.size
         assert Asciidoctor::Extensions.groups[:sample].is_a? Proc
+      ensure
+        Asciidoctor::Extensions.unregister_all
+      end
+    end
+
+    test 'should coerce group name to symbol when registering' do
+      begin
+        Asciidoctor::Extensions.register 'sample', SampleExtensionGroup
+        refute_nil Asciidoctor::Extensions.groups
+        assert_equal 1, Asciidoctor::Extensions.groups.size
+        assert_equal SampleExtensionGroup, Asciidoctor::Extensions.groups[:sample]
       ensure
         Asciidoctor::Extensions.unregister_all
       end
@@ -465,7 +476,7 @@ context 'Extensions' do
       registry = Asciidoctor::Extensions::Registry.new
       registry.block SampleBlock, :sample
       registry.activate Asciidoctor::Document.new
-      assert !(registry.registered_for_block? :sample, :sidebar)
+      refute registry.registered_for_block? :sample, :sidebar
     end
 
     test 'should instantiate block macro processor' do
@@ -933,7 +944,7 @@ target="target", attributes=[]
       begin
         Asciidoctor::Extensions.register do
           block do
-            named :skip
+            named :skipme
             on_context :paragraph
             parses_content_as :raw
             process do |parent, reader, attrs|
@@ -943,7 +954,7 @@ target="target", attributes=[]
         end
         input = <<-EOS
 .unused title
-[skip]
+[skipme]
 not rendered
 
 --
@@ -951,6 +962,38 @@ rendered
 --
         EOS
         doc = document_from_string input
+        assert_equal 1, doc.blocks.size
+        assert_nil doc.blocks[0].attributes['title']
+      ensure
+        Asciidoctor::Extensions.unregister_all
+      end
+    end
+
+    test 'should not invoke process method or carry over attributes if block processor declares skip content model' do
+      begin
+        process_method_called = false
+        Asciidoctor::Extensions.register do
+          block do
+            named :ignore
+            on_context :paragraph
+            parses_content_as :skip
+            process do |parent, reader, attrs|
+              process_method_called = true
+              nil
+            end
+          end
+        end
+        input = <<-EOS
+.unused title
+[ignore]
+not rendered
+
+--
+rendered
+--
+        EOS
+        doc = document_from_string input
+        refute process_method_called
         assert_equal 1, doc.blocks.size
         assert_nil doc.blocks[0].attributes['title']
       ensure
@@ -1130,7 +1173,7 @@ sample content
                                           :header_footer => true,
                                           :safe => Asciidoctor::SafeMode::SERVER,
                                           :attributes => {'docinfo' => ''}
-        assert !output.empty?
+        refute_empty output
         assert_css 'script[src="modernizr.js"]', output, 1
         assert_css 'meta[name="robots"]', output, 1
         assert_css 'meta[http-equiv="imagetoolbar"]', output, 0
